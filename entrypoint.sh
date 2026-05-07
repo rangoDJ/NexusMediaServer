@@ -15,9 +15,20 @@ if ! getent passwd "$PUID" >/dev/null 2>&1; then
     adduser -u "$PUID" -G "$GROUP" -s /bin/sh -D nexus
 fi
 
-# Ensure config directory and expected subdirectories exist, owned by the target user
+# Ensure app-managed config paths exist and are owned by the target user.
+#
+# IMPORTANT: we intentionally do NOT chown /config recursively.
+# ./config/db (Postgres data) is bind-mounted into the db container and must
+# remain owned by the Postgres internal user. Recursively chowning /config
+# would overwrite those permissions and cause:
+#   "could not open file global/pg_filenode.map: Permission denied"
+#
+# Instead, we only chown:
+#   /config          — the directory itself, so the app can create .initialized
+#   /config/plugins  — the plugin folder the app reads from
 mkdir -p /config/plugins
-chown -R "$PUID:$PGID" /config
+chown "$PUID:$PGID" /config
+chown -R "$PUID:$PGID" /config/plugins
 
 echo "[nexusmediaserver] Running as UID=${PUID} GID=${PGID}"
 
