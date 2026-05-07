@@ -16,21 +16,23 @@ CREATE INDEX refresh_tokens_user_idx ON refresh_tokens(user_id);
 
 -- File-level technical metadata (populated by scanner via ffprobe)
 ALTER TABLE media_items
-  ADD COLUMN duration_secs  INT,
-  ADD COLUMN video_codec    TEXT,
-  ADD COLUMN audio_codec    TEXT,
-  ADD COLUMN container      TEXT,
-  ADD COLUMN file_size      BIGINT,
-  ADD COLUMN width          INT,
-  ADD COLUMN height         INT,
-  ADD COLUMN bitrate_kbps   INT;
+  ADD COLUMN IF NOT EXISTS duration_secs  INT,
+  ADD COLUMN IF NOT EXISTS video_codec    TEXT,
+  ADD COLUMN IF NOT EXISTS audio_codec    TEXT,
+  ADD COLUMN IF NOT EXISTS container      TEXT,
+  ADD COLUMN IF NOT EXISTS file_size      BIGINT,
+  ADD COLUMN IF NOT EXISTS width          INT,
+  ADD COLUMN IF NOT EXISTS height         INT,
+  ADD COLUMN IF NOT EXISTS bitrate_kbps   INT;
 
+-- duration_secs already exists on episodes from 001_initial.sql;
+-- IF NOT EXISTS makes all additions safe to re-run.
 ALTER TABLE episodes
-  ADD COLUMN duration_secs  INT,
-  ADD COLUMN video_codec    TEXT,
-  ADD COLUMN audio_codec    TEXT,
-  ADD COLUMN container      TEXT,
-  ADD COLUMN file_size      BIGINT,
-  ADD COLUMN width          INT,
-  ADD COLUMN height         INT,
-  ADD COLUMN bitrate_kbps   INT;
+  ADD COLUMN IF NOT EXISTS duration_secs  INT,
+  ADD COLUMN IF NOT EXISTS video_codec    TEXT,
+  ADD COLUMN IF NOT EXISTS audio_codec    TEXT,
+  ADD COLUMN IF NOT EXISTS container      TEXT,
+  ADD COLUMN IF NOT EXISTS file_size      BIGINT,
+  ADD COLUMN IF NOT EXISTS width          INT,
+  ADD COLUMN IF NOT EXISTS height         INT,
+  ADD COLUMN IF NOT EXISTS bitrate_kbps   INT;
