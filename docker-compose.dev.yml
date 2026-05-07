@@ -15,10 +15,11 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./app/src:/app/src:ro
-      - ${MEDIA_PATH}:/media:ro
+      - ./src:/app/src:ro
+      # Add your media volumes here for dev testing (mirror what you'd mount in production)
     environment:
       NODE_ENV: development
+      SETUP_COMPLETE: ${SETUP_COMPLETE:-false}
 
   transcoder:
     build:
@@ -26,7 +27,7 @@ services:
       target: dev
     volumes:
       - ./transcoder/src:/app/src:ro
-      - ${MEDIA_PATH}:/media:ro
+      # Mirror media volumes here too
     environment:
       NODE_ENV: development
       # In dev the app is on the host, not in Docker network — use host.docker.internal

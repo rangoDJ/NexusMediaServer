@@ -1,6 +1,9 @@
+import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
+import axios from 'axios'
 import Settings from './pages/Settings.jsx'
 import Login from './pages/Login.jsx'
+import Setup from './pages/Setup.jsx'
 
 function useAuth() {
   return !!localStorage.getItem('nexus_token')
@@ -13,6 +16,30 @@ function RequireAdmin({ children }) {
 }
 
 export default function App() {
+  // null = checking, true = required, false = done
+  const [setupRequired, setSetupRequired] = useState(null)
+
+  useEffect(() => {
+    axios.get('/api/v1/setup/status')
+      .then(r => setSetupRequired(r.data.required))
+      .catch(() => setSetupRequired(false))  // on error assume setup is done
+  }, [])
+
+  // Blank screen while we check — avoids a flash of the login page
+  if (setupRequired === null) return null
+
+  if (setupRequired) {
+    return (
+      <Routes>
+        <Route
+          path="/setup"
+          element={<Setup onComplete={() => setSetupRequired(false)} />}
+        />
+        <Route path="*" element={<Navigate to="/setup" replace />} />
+      </Routes>
+    )
+  }
+
   return (
     <Routes>
       <Route path="/login" element={<Login />} />

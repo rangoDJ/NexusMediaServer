@@ -21,6 +21,7 @@ import { authMiddleware } from './middleware/auth.js'
 import { startHealthPoller } from './services/transcoderPool.js'
 import { loadPlugins, callHook } from './services/pluginLoader.js'
 import pluginRoutes from './routes/plugins.js'
+import setupRoutes from './routes/setup.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
@@ -61,6 +62,9 @@ app.decorate('authenticate', authMiddleware)
 app.decorate('db', await createPool())
 
 // ── API routes (register before static so /api/* is never served as a file) ──
+// Setup routes must be registered first — they are publicly accessible and
+// gate the wizard before any auth is possible.
+await app.register(setupRoutes,      { prefix: '/api/v1/setup' })
 await app.register(serverRoutes,     { prefix: '/api/v1/server' })
 await app.register(authRoutes,       { prefix: '/api/v1/auth' })
 await app.register(libraryRoutes,    { prefix: '/api/v1/libraries' })

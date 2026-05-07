@@ -17,18 +17,22 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TRANSCODER_SECRET: ${TRANSCODER_SECRET}
-      MEDIA_PATH: /media
       PLUGINS_PATH: /config/plugins
-      # PUID/PGID — set these to match your host user so mounted files are owned correctly.
-      # Find yours with: id -u  and  id -g
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
     volumes:
-      # All persistent app config — plugins, and any future state — live under /config.
-      # Map this to a directory on your host so data survives container recreations.
+      # Persistent config — plugins and server state live here.
       - ${CONFIG_PATH:-./config}:/config
-      - ${MEDIA_PATH}:/media:ro
-    # Remove or replace with "depends_on: []" if using Option B (external Postgres)
+      #
+      # ── Media volumes ────────────────────────────────────────────────────────
+      # Mount your media directories here. During the first-launch wizard you will
+      # point each library at the container-side path you choose below.
+      # Add as many mounts as you need. The :ro flag keeps them read-only.
+      #
+      # Example:
+      # - /mnt/media/movies:/movies:ro
+      # - /mnt/media/tv:/tv:ro
+      # - /mnt/media/music:/music:ro
     depends_on:
       db:
         condition: service_healthy
@@ -40,11 +44,6 @@ services:
       retries: 3
 
   # ── Transcoder (separate container — can be moved to a remote host) ──────────
-  # This is the default CPU-only transcoder. For GPU acceleration see the
-  # commented-out service blocks below (NVIDIA / Intel VAAPI).
-  #
-  # To run on a remote machine: copy just this service block to a docker-compose.yml
-  # on the remote host. Set API_URL to the public address of the main container.
   transcoder:
     # Pre-built image (recommended):
     image: ghcr.io/rangodj/nexusmediaserver-transcoder:latest
@@ -56,14 +55,21 @@ services:
     environment:
       TRANSCODER_SECRET: ${TRANSCODER_SECRET}
       TRANSCODER_NAME: ${TRANSCODER_NAME:-transcoder-cpu}
-      # URL the nexusmediaserver container uses to reach this transcoder (internal Docker network)
       TRANSCODER_PUBLIC_URL: http://transcoder:3001
       API_URL: http://nexusmediaserver:3000
       HW_ACCEL: cpu
       HLS_OUTPUT_PATH: /tmp/hls
     volumes:
-      - ${MEDIA_PATH}:/media:ro
       - hls_segments:/tmp/hls
+      #
+      # ── Media volumes ────────────────────────────────────────────────────────
+      # The transcoder must be able to read the same paths as the app container.
+      # Mirror the media volume mounts you added to nexusmediaserver above.
+      #
+      # Example:
+      # - /mnt/media/movies:/movies:ro
+      # - /mnt/media/tv:/tv:ro
+      # - /mnt/media/music:/music:ro
     depends_on:
       - nexusmediaserver
     restart: unless-stopped
@@ -90,8 +96,9 @@ services:
   #     NVIDIA_VISIBLE_DEVICES: all
   #     NVIDIA_DRIVER_CAPABILITIES: video,compute,utility
   #   volumes:
-  #     - ${MEDIA_PATH}:/media:ro
   #     - hls_segments:/tmp/hls
+  #     # Mirror your media volumes here too:
+  #     # - /mnt/media/movies:/movies:ro
   #   deploy:
   #     resources:
   #       reservations:
@@ -107,10 +114,6 @@ services:
   # Requirements:
   #   • Intel CPU with integrated GPU (Broadwell or newer for H.264; Kaby Lake+ for H.265)
   #   • /dev/dri/renderD128 accessible on the Docker host (the default on Linux)
-  #   • libva-intel-driver or intel-media-driver installed in the transcoder image
-  #     (the default alpine ffmpeg build includes VAAPI support)
-  #
-  # VAAPI and QSV both use this device. Set HW_ACCEL=vaapi (recommended) or HW_ACCEL=qsv.
   #
   # To enable: uncomment this block and comment out or remove the "transcoder" service above.
   #
@@ -128,8 +131,9 @@ services:
   #   devices:
   #     - /dev/dri/renderD128:/dev/dri/renderD128
   #   volumes:
-  #     - ${MEDIA_PATH}:/media:ro
   #     - hls_segments:/tmp/hls
+  #     # Mirror your media volumes here too:
+  #     # - /mnt/media/movies:/movies:ro
   #   depends_on:
   #     - nexusmediaserver
   #   restart: unless-stopped
@@ -137,16 +141,6 @@ services:
   # ── Database — choose ONE of the two options below ───────────────────────────
   #
   # OPTION A — Bundled Postgres (default, recommended for simple single-host setups)
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Use this when:
-  #   • You want everything self-contained on one machine
-  #   • You don't already have a Postgres server running elsewhere
-  #   • You're just getting started and want the simplest possible setup
-  #
-  # How it works: Docker manages the Postgres container. Data is stored under
-  # CONFIG_PATH/db on your host, alongside your plugins and other config.
-  # Make sure DATABASE_URL in .env points to this service:
-  #   DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
   db:
     image: postgres:16-alpine
     environment:
@@ -154,7 +148,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      # Stored alongside the rest of your config so everything is in one place.
       - ${CONFIG_PATH:-./config}/db:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -162,30 +155,14 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
-    # Uncomment to expose Postgres to your local machine (e.g. for DB admin tools)
     # ports:
     #   - "5432:5432"
 
   # OPTION B — External / self-hosted Postgres
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Use this when:
-  #   • You already run a Postgres server (on another container, a NAS, a VPS, etc.)
-  #   • You want backups and DB management handled outside of this project
-  #   • You're running multiple self-hosted apps that share one Postgres instance
-  #
   # Steps to switch:
-  #   1. Comment out or delete the entire "db" service block above (Option A)
-  #   2. Remove "db" from the nexusmediaserver depends_on block above, or change it to:
-  #        depends_on: []
-  #   3. Set DATABASE_URL in .env to point at your external host, for example:
-  #        DATABASE_URL=postgres://nexus:yourpassword@192.168.1.50:5432/nexusdb
-  #      or using a hostname if it resolves from inside Docker:
-  #        DATABASE_URL=postgres://nexus:yourpassword@my-postgres-host:5432/nexusdb
-  #
-  # Note: the app runs migrations automatically on startup, so the target database
-  # just needs to exist — the schema will be created on first run.
-  #
-  # (no service block needed for Option B — DATABASE_URL does all the work)
+  #   1. Comment out or delete the "db" service block above
+  #   2. Remove "db" from the nexusmediaserver depends_on, or change to: depends_on: []
+  #   3. Set DATABASE_URL in .env to point at your external host
 
 volumes:
   hls_segments:
