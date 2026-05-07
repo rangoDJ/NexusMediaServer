@@ -1,0 +1,16 @@
+# Normalize all text files to LF in the repository
+* text=auto eol=lf
+
+# Shell scripts must always be LF — CRLF breaks shebangs in Alpine/Linux containers
+*.sh text eol=lf
+
+# Force LF for Dockerfiles and YAML
+Dockerfile text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+
+# Binary files — no line-ending conversion
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

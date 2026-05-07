@@ -1,0 +1,37 @@
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# In dev mode:
+#   - The app container runs only the Fastify API on :3000 (no static serving)
+#   - Run `npm run dev --prefix app/client` locally for the Vite dev server on :5173
+#   - Vite proxies /api/* → localhost:3000
+#   - Postgres is exposed on :5432 for DB tools
+
+services:
+  nexusmediaserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./app/src:/app/src:ro
+      - ${MEDIA_PATH}:/media:ro
+    environment:
+      NODE_ENV: development
+
+  transcoder:
+    build:
+      context: ./transcoder
+      target: dev
+    volumes:
+      - ./transcoder/src:/app/src:ro
+      - ${MEDIA_PATH}:/media:ro
+    environment:
+      NODE_ENV: development
+      # In dev the app is on the host, not in Docker network — use host.docker.internal
+      API_URL: http://host.docker.internal:3000
+
+  db:
+    ports:
+      - "5432:5432"

@@ -1,0 +1,37 @@
+import { requireAdmin } from '../middleware/auth.js'
+import { scanLibrary } from '../services/scanner.js'
+
+export default async function libraryRoutes(app) {
+  app.addHook('preHandler', app.authenticate)
+
+  app.get('/', async () => {
+    const { rows } = await app.db.query(
+      'SELECT id, name, type, paths, scan_status, last_scanned_at FROM libraries ORDER BY name'
+    )
+    return rows
+  })
+
+  app.post('/', { preHandler: requireAdmin }, async (request, reply) => {
+    const { name, type, paths } = request.body
+    const { rows } = await app.db.query(
+      'INSERT INTO libraries(name, type, paths) VALUES($1,$2,$3) RETURNING *',
+      [name, type, paths]
+    )
+    return reply.code(201).send(rows[0])
+  })
+
+  app.delete('/:id', { preHandler: requireAdmin }, async (request, reply) => {
+    await app.db.query('DELETE FROM libraries WHERE id=$1', [request.params.id])
+    return reply.code(204).send()
+  })
+
+  // Trigger a library scan
+  app.post('/:id/scan', { preHandler: requireAdmin }, async (request, reply) => {
+    const { rows } = await app.db.query('SELECT * FROM libraries WHERE id=$1', [request.params.id])
+    if (!rows.length) return reply.code(404).send({ error: 'Library not found' })
+
+    // Fire and forget — scan runs in background
+    scanLibrary(app.db, rows[0], app.log).catch(err => app.log.error(err, 'Library scan failed'))
+    return { status: 'scanning' }
+  })
+}
