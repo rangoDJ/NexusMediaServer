@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { api } from '../api/client.js'
 import styles from './Login.module.css'
 
@@ -43,6 +43,10 @@ export default function Login() {
           <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} required />
         </label>
         <button className="primary" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
+        <p style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+          No account?{' '}
+          <Link to="/register" style={{ color: 'var(--accent)' }}>Create one</Link>
+        </p>
       </form>
     </div>
   )

@@ -11,16 +11,25 @@ function fmt(secs) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+function pad(n) { return String(n).padStart(2, '0') }
+
 export default function MovieDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [item, setItem]       = useState(null)
-  const [playing, setPlaying] = useState(false)
-  const [error, setError]     = useState(null)
+  const [item, setItem]           = useState(null)
+  const [playing, setPlaying]     = useState(null) // { episodeId?, mediaItemId?, title }
+  const [openSeason, setOpenSeason] = useState(null)
+  const [error, setError]         = useState(null)
 
   useEffect(() => {
     api.get(`/media/${id}`)
-      .then(r => setItem(r.data))
+      .then(r => {
+        setItem(r.data)
+        // Default to first season open for series
+        if (r.data.type === 'series' && r.data.episodes?.length) {
+          setOpenSeason(r.data.episodes[0].season_number)
+        }
+      })
       .catch(() => setError('Could not load this title.'))
   }, [id])
 
@@ -28,10 +37,15 @@ export default function MovieDetail() {
     return (
       <div className={styles.playerOverlay}>
         <div className={styles.playerBar}>
-          <button className="ghost" onClick={() => setPlaying(false)}>&#8592; Back</button>
-          <span className={styles.playerTitle}>{item.title}</span>
+          <button className="ghost" onClick={() => setPlaying(null)}>&#8592; Back</button>
+          <span className={styles.playerTitle}>{playing.title}</span>
         </div>
-        <Player mediaItemId={item.id} />
+        <div style={{ flex: 1, height: 0 }}>
+          <Player
+            mediaItemId={playing.mediaItemId}
+            episodeId={playing.episodeId}
+          />
+        </div>
       </div>
     )
   }
@@ -53,6 +67,16 @@ export default function MovieDetail() {
   const writer   = meta.writer   ?? null
   const studios  = meta.studios  ?? null
   const genres   = item.genres   ?? meta.genres ?? null
+
+  // Group episodes by season for series
+  const seasons = item.type === 'series' && item.episodes
+    ? [...new Set(item.episodes.map(e => e.season_number))].sort((a, b) => a - b)
+    : []
+  const episodesBySeason = (item.episodes ?? []).reduce((acc, ep) => {
+    if (!acc[ep.season_number]) acc[ep.season_number] = []
+    acc[ep.season_number].push(ep)
+    return acc
+  }, {})
 
   return (
     <div className={styles.page}>
@@ -87,7 +111,10 @@ export default function MovieDetail() {
 
               <div className={styles.metaRow}>
                 {item.year      && <span>{item.year}</span>}
-                {item.duration_secs && <span>{fmt(item.duration_secs)}</span>}
+                {item.type === 'series' && seasons.length > 0 && (
+                  <span>{seasons.length} {seasons.length === 1 ? 'Season' : 'Seasons'}</span>
+                )}
+                {item.type !== 'series' && item.duration_secs && <span>{fmt(item.duration_secs)}</span>}
                 {item.rating    && (
                   <span className={styles.rating}>★ {Number(item.rating).toFixed(1)}</span>
                 )}
@@ -107,7 +134,10 @@ export default function MovieDetail() {
               </table>
 
               {item.type !== 'series' && (
-                <button className={`primary ${styles.playBtn}`} onClick={() => setPlaying(true)}>
+                <button
+                  className={`primary ${styles.playBtn}`}
+                  onClick={() => setPlaying({ mediaItemId: item.id, title: item.title })}
+                >
                   ▶ Play
                 </button>
               )}
@@ -115,6 +145,56 @@ export default function MovieDetail() {
           </div>
         </div>
       </div>
+
+      {/* ── Series episode browser ─────────────────────────────────────── */}
+      {item.type === 'series' && seasons.length > 0 && (
+        <div className={styles.episodeSection}>
+          <h2 className={styles.castHeading}>Episodes</h2>
+          {seasons.map(season => (
+            <div key={season} className={styles.seasonGroup}>
+              <button
+                className={styles.seasonHeader}
+                onClick={() => setOpenSeason(s => s === season ? null : season)}
+              >
+                <span>Season {season}</span>
+                <span className={styles.seasonChevron}>
+                  {openSeason === season ? '▲' : '▼'}
+                </span>
+                <span className={styles.seasonCount}>
+                  {episodesBySeason[season]?.length ?? 0} episodes
+                </span>
+              </button>
+
+              {openSeason === season && (
+                <div className={styles.episodeList}>
+                  {(episodesBySeason[season] ?? []).map(ep => (
+                    <div key={ep.id} className={styles.episodeRow}>
+                      <span className={styles.epNumber}>
+                        S{pad(season)}E{pad(ep.episode_number)}
+                      </span>
+                      <div className={styles.epInfo}>
+                        <p className={styles.epTitle}>{ep.title ?? `Episode ${ep.episode_number}`}</p>
+                        {ep.duration_secs && (
+                          <p className={styles.epMeta}>{fmt(ep.duration_secs)}</p>
+                        )}
+                      </div>
+                      <button
+                        className={`primary ${styles.epPlayBtn}`}
+                        onClick={() => setPlaying({
+                          episodeId: ep.id,
+                          title: `${item.title} · S${pad(season)}E${pad(ep.episode_number)}${ep.title ? ` — ${ep.title}` : ''}`
+                        })}
+                      >
+                        ▶
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Cast & Crew ────────────────────────────────────────────────── */}
       {cast.length > 0 && (

@@ -159,4 +159,24 @@ export default async function mediaRoutes(app) {
     `, [userId, request.params.id, position_secs, duration_secs, completed ?? false])
     return reply.code(204).send()
   })
+
+  // Episode-level watch progress (separate from media_item progress)
+  app.get('/episode/:episodeId/progress', async (request) => {
+    const { rows } = await app.db.query(
+      'SELECT * FROM watch_progress WHERE user_id=$1 AND episode_id=$2',
+      [request.user.sub, request.params.episodeId]
+    )
+    return rows[0] ?? { position_secs: 0, completed: false }
+  })
+
+  app.put('/episode/:episodeId/progress', async (request, reply) => {
+    const { position_secs, duration_secs, completed } = request.body
+    await app.db.query(`
+      INSERT INTO watch_progress(user_id, episode_id, position_secs, duration_secs, completed)
+      VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT (user_id, episode_id) DO UPDATE
+        SET position_secs=$3, duration_secs=$4, completed=$5, updated_at=now()
+    `, [request.user.sub, request.params.episodeId, position_secs, duration_secs, completed ?? false])
+    return reply.code(204).send()
+  })
 }

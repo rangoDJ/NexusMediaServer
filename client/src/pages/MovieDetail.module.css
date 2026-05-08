@@ -242,6 +242,97 @@
   word-break: break-word;
 }
 
+/* ── Episode browser ────────────────────────────────────────────────────── */
+.episodeSection {
+  padding: 8px 48px 40px;
+}
+
+.seasonGroup {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.seasonHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: var(--surface);
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+  transition: background 0.15s;
+}
+.seasonHeader:hover { background: var(--surface2); }
+
+.seasonChevron {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.seasonCount {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.episodeList {
+  border-top: 1px solid var(--border);
+}
+
+.episodeRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.episodeRow:last-child { border-bottom: none; }
+.episodeRow:hover { background: var(--surface); }
+
+.epNumber {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-family: monospace;
+  width: 72px;
+}
+
+.epInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.epTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.epMeta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.epPlayBtn {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
 /* ── Full-screen player ─────────────────────────────────────────────────── */
 .playerOverlay {
   position: fixed;
