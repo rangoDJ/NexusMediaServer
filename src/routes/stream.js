@@ -69,16 +69,27 @@ export default async function streamRoutes(app) {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
     if (!session) return
 
+    // Poll until ffmpeg has generated at least one segment (transcoder returns 202 while not ready)
     let playlist
-    try {
-      const { data } = await axios.get(
-        `${session.node_url}/session/${session.remote_session_id}/playlist.m3u8`,
-        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, responseType: 'text', timeout: 10_000 }
-      )
-      playlist = data
-    } catch {
-      return reply.code(502).send({ error: 'Transcoder unreachable' })
+    for (let attempt = 0; attempt < 20; attempt++) {
+      let resp
+      try {
+        resp = await axios.get(
+          `${session.node_url}/session/${session.remote_session_id}/playlist.m3u8`,
+          {
+            headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+            responseType: 'text',
+            timeout: 10_000,
+            validateStatus: s => s === 200 || s === 202,
+          }
+        )
+      } catch {
+        return reply.code(502).send({ error: 'Transcoder unreachable' })
+      }
+      if (resp.status === 200) { playlist = resp.data; break }
+      await new Promise(r => setTimeout(r, 500))
     }
+    if (!playlist) return reply.code(504).send({ error: 'Playlist not ready after 10s' })
 
     // Rewrite bare segment filenames to our proxy path
     const rewritten = playlist.replace(
