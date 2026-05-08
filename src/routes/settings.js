@@ -17,7 +17,8 @@ export default async function settingsRoutes(app) {
   })
 
   // All routes below require admin
-  app.addHook('preHandler', [app.authenticate, requireAdmin])
+  app.addHook('preHandler', app.authenticate)
+  app.addHook('preHandler', requireAdmin)
 
   // Full settings dump, grouped by category
   app.get('/', async () => {

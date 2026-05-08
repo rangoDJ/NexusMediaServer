@@ -48,7 +48,8 @@ export default async function transcoderRoutes(app) {
   })
 
   // All routes below require admin auth
-  app.addHook('preHandler', [app.authenticate, requireAdmin])
+  app.addHook('preHandler', app.authenticate)
+  app.addHook('preHandler', requireAdmin)
 
   app.get('/', async () => {
     const { rows } = await app.db.query(`

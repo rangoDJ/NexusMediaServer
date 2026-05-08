@@ -2,7 +2,8 @@ import { requireAdmin } from '../middleware/auth.js'
 import { registry, updatePluginSettings } from '../services/pluginLoader.js'
 
 export default async function pluginRoutes(app) {
-  app.addHook('preHandler', [app.authenticate, requireAdmin])
+  app.addHook('preHandler', app.authenticate)
+  app.addHook('preHandler', requireAdmin)
 
   // List all known plugins (DB records merged with live registry state)
   app.get('/', async () => {
