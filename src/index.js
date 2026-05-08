@@ -104,32 +104,32 @@ if (process.env.NODE_ENV !== 'development') {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+// Register onClose hooks before listen — Fastify forbids addHook after the
+// server has started listening.
+const pollerHandle = startHealthPoller(app.db, app.log)
+app.addHook('onClose', () => clearInterval(pollerHandle))
+
+if (process.env.NODE_ENV !== 'development') {
+  const transcoderEntry = resolve(__dirname, '../transcoder/src/index.js')
+  const builtin = spawn('node', [transcoderEntry], {
+    env: {
+      ...process.env,
+      PORT:                    '3002',
+      TRANSCODER_NAME:         'builtin-cpu',
+      TRANSCODER_PUBLIC_URL:   'http://localhost:3002',
+      API_URL:                 'http://localhost:3000',
+      HW_ACCEL:                'cpu',
+      IS_BUILTIN:              'true',
+      HLS_OUTPUT_PATH:         '/tmp/hls',
+    },
+    stdio: 'inherit',
+  })
+  builtin.on('error', err => app.log.error(err, 'Built-in transcoder failed to start'))
+  app.addHook('onClose', () => builtin.kill())
+}
+
 try {
   await app.listen({ port: 3000, host: '0.0.0.0' })
-  const pollerHandle = startHealthPoller(app.db, app.log)
-  app.addHook('onClose', () => clearInterval(pollerHandle))
-
-  // In production the transcoder source is bundled into this container.
-  // Spawn it as a child process on port 3002 so the app always has a built-in
-  // CPU transcoder even when no external transcoder containers are configured.
-  if (process.env.NODE_ENV !== 'development') {
-    const transcoderEntry = resolve(__dirname, '../transcoder/src/index.js')
-    const builtin = spawn('node', [transcoderEntry], {
-      env: {
-        ...process.env,
-        PORT:                    '3002',
-        TRANSCODER_NAME:         'builtin-cpu',
-        TRANSCODER_PUBLIC_URL:   'http://localhost:3002',
-        API_URL:                 'http://localhost:3000',
-        HW_ACCEL:                'cpu',
-        IS_BUILTIN:              'true',
-        HLS_OUTPUT_PATH:         '/tmp/hls',
-      },
-      stdio: 'inherit',
-    })
-    builtin.on('error', err => app.log.error(err, 'Built-in transcoder failed to start'))
-    app.addHook('onClose', () => builtin.kill())
-  }
 } catch (err) {
   app.log.error(err)
   process.exit(1)
