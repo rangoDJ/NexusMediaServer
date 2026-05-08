@@ -176,6 +176,18 @@
   vertical-align: middle;
 }
 
+/* Library tab helpers */
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+.subheading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 /* Toast */
 .toast {
   position: fixed;

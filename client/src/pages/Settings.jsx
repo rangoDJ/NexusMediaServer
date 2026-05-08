@@ -222,8 +222,181 @@ function MetadataTab({ rows, save }) {
   return <SettingsForm rows={rows} save={save} />
 }
 
+const LIBRARY_TYPES = [
+  { value: 'movies', label: 'Movies' },
+  { value: 'series', label: 'TV Series' },
+  { value: 'music',  label: 'Music' },
+]
+
 function LibraryTab({ rows, save }) {
-  return <SettingsForm rows={rows} save={save} />
+  const [libraries, setLibraries]   = useState([])
+  const [scanning,  setScanning]    = useState({})   // id → bool
+  const [form,      setForm]        = useState({ name: '', type: 'movies', paths: [''] })
+  const [adding,    setAdding]      = useState(false)
+  const [error,     setError]       = useState(null)
+
+  useEffect(() => { loadLibraries() }, [])
+
+  async function loadLibraries() {
+    const { data } = await api.get('/libraries')
+    setLibraries(data)
+  }
+
+  async function addLibrary(e) {
+    e.preventDefault()
+    setError(null)
+    setAdding(true)
+    try {
+      const paths = form.paths.map(p => p.trim()).filter(Boolean)
+      if (!paths.length) { setError('At least one path is required'); return }
+      await api.post('/libraries', { name: form.name.trim(), type: form.type, paths })
+      setForm({ name: '', type: 'movies', paths: [''] })
+      loadLibraries()
+    } catch (err) {
+      setError(err.response?.data?.error ?? 'Failed to add library')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function deleteLibrary(id, name) {
+    if (!confirm(`Delete library "${name}"?\n\nMedia items will be removed from the database. Your files will not be deleted.`)) return
+    await api.delete(`/libraries/${id}`)
+    setLibraries(ls => ls.filter(l => l.id !== id))
+  }
+
+  async function scanLibrary(id) {
+    setScanning(s => ({ ...s, [id]: true }))
+    try {
+      await api.post(`/libraries/${id}/scan`)
+      loadLibraries()
+    } finally {
+      setScanning(s => { const n = { ...s }; delete n[id]; return n })
+    }
+  }
+
+  function setPath(i, value) {
+    setForm(f => { const paths = [...f.paths]; paths[i] = value; return { ...f, paths } })
+  }
+
+  return (
+    <div className={styles.section}>
+      {/* ── Scan settings ───────────────────────────────────────────────── */}
+      <SettingsForm rows={rows} save={save} />
+
+      <div className={styles.divider} />
+
+      {/* ── Existing libraries ──────────────────────────────────────────── */}
+      <h3 className={styles.subheading}>Your libraries</h3>
+
+      {libraries.length === 0
+        ? <p className={styles.empty}>No libraries added yet.</p>
+        : (
+          <div className={styles.nodeList}>
+            {libraries.map(lib => (
+              <div key={lib.id} className={styles.nodeCard}>
+                <div className={styles.nodeInfo}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <strong>{lib.name}</strong>
+                    <span style={badge('#7c6af7')}>{lib.type}</span>
+                    {lib.scan_status === 'scanning' && <span style={badge('#f0a500')}>scanning…</span>}
+                    {lib.scan_status === 'idle' && lib.last_scanned_at && <span style={badge('#4caf7d')}>ready</span>}
+                  </div>
+                  <span className={styles.nodeUrl}>{lib.paths?.join('  ·  ')}</span>
+                  {lib.last_scanned_at && (
+                    <span className={styles.nodeMeta}>
+                      Last scanned {new Date(lib.last_scanned_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <div className={styles.nodeActions}>
+                  <button className="ghost" disabled={!!scanning[lib.id]} onClick={() => scanLibrary(lib.id)}>
+                    {scanning[lib.id] ? 'Scanning…' : 'Scan now'}
+                  </button>
+                  <button className="danger" onClick={() => deleteLibrary(lib.id, lib.name)}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      }
+
+      {/* ── Add library ─────────────────────────────────────────────────── */}
+      <div className={styles.card}>
+        <h3>Add library</h3>
+        {error && <div className={styles.inlineError}>{error}</div>}
+        <form className={styles.form} onSubmit={addLibrary}>
+          <div className={styles.row}>
+            <div className={styles.rowMeta}>
+              <label className={styles.rowLabel}>Name</label>
+            </div>
+            <div className={styles.rowControl}>
+              <input
+                placeholder="e.g. Movies"
+                value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                required
+              />
+            </div>
+          </div>
+
+          <div className={styles.row}>
+            <div className={styles.rowMeta}>
+              <label className={styles.rowLabel}>Type</label>
+            </div>
+            <div className={styles.rowControl}>
+              <select
+                value={form.type}
+                onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+                style={{ width: 'auto' }}
+              >
+                {LIBRARY_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className={styles.row}>
+            <div className={styles.rowMeta}>
+              <label className={styles.rowLabel}>Paths</label>
+              <p className={styles.rowDesc}>Container-side paths to scan. Add multiple if your media is spread across directories.</p>
+            </div>
+            <div className={styles.rowControl}>
+              {form.paths.map((p, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <input
+                    placeholder="/media/movies"
+                    value={p}
+                    onChange={e => setPath(i, e.target.value)}
+                    required={i === 0}
+                  />
+                  {form.paths.length > 1 && (
+                    <button
+                      type="button" className="ghost"
+                      style={{ flexShrink: 0, padding: '8px 12px' }}
+                      onClick={() => setForm(f => ({ ...f, paths: f.paths.filter((_, j) => j !== i) }))}
+                    >✕</button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button" className="ghost"
+                style={{ width: 'auto', fontSize: 13 }}
+                onClick={() => setForm(f => ({ ...f, paths: [...f.paths, ''] }))}
+              >
+                + Add path
+              </button>
+            </div>
+          </div>
+
+          <div className={styles.formFooter}>
+            <button className="primary" type="submit" disabled={adding}>
+              {adding ? 'Adding…' : 'Add library'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
 }
 
 function TranscodingTab({ rows, save }) {
