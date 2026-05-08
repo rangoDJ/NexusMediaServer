@@ -118,7 +118,9 @@ jobs:
           context: transcoder
           file: transcoder/Dockerfile
           target: production
-          platforms: linux/amd64,linux/arm64
+          # jellyfin-ffmpeg (Intel QSV / VAAPI) is x86-only, so the transcoder
+          # image is amd64-only. NVENC and Intel hw accel both require x86.
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
