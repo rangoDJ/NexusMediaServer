@@ -296,6 +296,17 @@ function LibraryTab({ rows, save }) {
     return null
   }
 
+  function LibStats({ lib }) {
+    const count = lib.item_count ?? 0
+    if (count === 0) return <span>No items scanned yet</span>
+    if (lib.type === 'movies') return <span>{count} movie{count !== 1 ? 's' : ''}</span>
+    if (lib.type === 'series' || lib.type === 'tv') {
+      const eps = lib.episode_count ?? 0
+      return <span>{count} series · {eps} episode{eps !== 1 ? 's' : ''}</span>
+    }
+    return <span>{count} item{count !== 1 ? 's' : ''}</span>
+  }
+
   return (
     <div className={styles.section}>
       {/* ── Scan settings ───────────────────────────────────────────────── */}
@@ -319,11 +330,12 @@ function LibraryTab({ rows, save }) {
                     <ScanBadge lib={lib} />
                   </div>
                   <span className={styles.nodeUrl}>{lib.paths?.join('  ·  ')}</span>
-                  {lib.last_scanned_at && (
-                    <span className={styles.nodeMeta}>
-                      Last scanned {new Date(lib.last_scanned_at).toLocaleString()}
-                    </span>
-                  )}
+                  <span className={styles.nodeMeta}>
+                    <LibStats lib={lib} />
+                    {lib.last_scanned_at && (
+                      <> · Last scanned {new Date(lib.last_scanned_at).toLocaleString()}</>
+                    )}
+                  </span>
                 </div>
                 <div className={styles.nodeActions}>
                   <button

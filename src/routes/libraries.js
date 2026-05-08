@@ -5,9 +5,16 @@ export default async function libraryRoutes(app) {
   app.addHook('preHandler', app.authenticate)
 
   app.get('/', async () => {
-    const { rows } = await app.db.query(
-      'SELECT id, name, type, paths, scan_status, last_scanned_at FROM libraries ORDER BY name'
-    )
+    const { rows } = await app.db.query(`
+      SELECT l.id, l.name, l.type, l.paths, l.scan_status, l.last_scanned_at,
+             COUNT(m.id)::int AS item_count,
+             COUNT(e.id)::int AS episode_count
+      FROM libraries l
+      LEFT JOIN media_items m ON m.library_id = l.id
+      LEFT JOIN episodes    e ON e.series_id  = m.id AND m.type = 'series'
+      GROUP BY l.id
+      ORDER BY l.name
+    `)
     return rows
   })
 
