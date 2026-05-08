@@ -1,12 +1,8 @@
-FROM node:22-slim AS base
-# Debian slim gives us access to Intel VAAPI drivers not available in Alpine.
-# intel-media-va-driver  = iHD driver for Intel Gen 8+ (Broadwell and newer)
-# i965-va-driver         = legacy driver for Gen 4-7 (Haswell and older)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    intel-media-va-driver \
-    i965-va-driver \
-    && rm -rf /var/lib/apt/lists/*
+FROM node:22-alpine AS base
+# mesa-va-gallium provides VA-API hardware acceleration for Intel iGPU
+# via Mesa's open-source iris Gallium driver (Gen8+ / Broadwell and newer).
+# libva-intel-driver covers older Gen4-7 (Haswell and earlier) as a fallback.
+RUN apk add --no-cache ffmpeg mesa-va-gallium libva-intel-driver
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
