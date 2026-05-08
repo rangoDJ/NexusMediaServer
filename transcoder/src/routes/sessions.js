@@ -31,6 +31,10 @@ export default async function sessionRoutes(app) {
     const s = sessionStore.get(request.params.id)
     if (!s) return reply.code(404).send({ error: 'Session not found' })
 
+    if (s.status === 'error') {
+      return reply.code(500).send({ error: 'Transcode process failed' })
+    }
+
     const playlistPath = join(s.outputDir, 'playlist.m3u8')
     if (!existsSync(playlistPath)) {
       return reply.code(202).send({ error: 'Playlist not ready yet' })

@@ -83,7 +83,9 @@ export default async function streamRoutes(app) {
             validateStatus: s => s === 200 || s === 202,
           }
         )
-      } catch {
+      } catch (err) {
+        const status = err.response?.status
+        if (status === 500) return reply.code(502).send({ error: 'Transcode failed — check transcoder logs' })
         return reply.code(502).send({ error: 'Transcoder unreachable' })
       }
       if (resp.status === 200) { playlist = resp.data; break }
