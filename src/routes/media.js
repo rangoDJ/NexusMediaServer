@@ -29,6 +29,20 @@ export default async function mediaRoutes(app) {
     return rows
   })
 
+  // Items the user started but hasn't finished, newest first
+  app.get('/continue-watching', async (request) => {
+    const { rows } = await app.db.query(`
+      SELECT m.id, m.type, m.title, m.year, m.poster_url, m.duration_secs,
+             wp.position_secs, wp.updated_at
+      FROM watch_progress wp
+      JOIN media_items m ON m.id = wp.media_item_id
+      WHERE wp.user_id = $1 AND wp.completed = false AND wp.position_secs > 30
+      ORDER BY wp.updated_at DESC
+      LIMIT 20
+    `, [request.user.sub])
+    return rows
+  })
+
   // Single media item with full metadata
   app.get('/:id', async (request, reply) => {
     const { rows } = await app.db.query('SELECT * FROM media_items WHERE id=$1', [request.params.id])

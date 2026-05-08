@@ -22,7 +22,7 @@ export default function Login() {
       localStorage.setItem('nexus_token', data.access_token)
       localStorage.setItem('nexus_refresh_token', data.refresh_token)
       localStorage.setItem('nexus_user', JSON.stringify(data.user))
-      navigate('/settings')
+      navigate('/')
     } catch (err) {
       setError(err.response?.data?.error ?? 'Login failed')
     } finally {

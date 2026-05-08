@@ -4,9 +4,16 @@ import axios from 'axios'
 import Settings from './pages/Settings.jsx'
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
+import Home from './pages/Home.jsx'
 
 function useAuth() {
   return !!localStorage.getItem('nexus_token')
+}
+
+function RequireAuth({ children }) {
+  const authed = useAuth()
+  if (!authed) return <Navigate to="/login" replace />
+  return children
 }
 
 function RequireAdmin({ children }) {
@@ -43,8 +50,9 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/" element={<RequireAuth><Home /></RequireAuth>} />
       <Route path="/settings" element={<RequireAdmin><Settings /></RequireAdmin>} />
-      <Route path="*" element={<Navigate to="/settings" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
