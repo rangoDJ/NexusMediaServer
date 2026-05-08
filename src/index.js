@@ -26,7 +26,7 @@ import setupRoutes from './routes/setup.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
 
-const app = Fastify({ logger: { level: process.env.NODE_ENV === 'development' ? 'info' : 'warn' } })
+const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
 
 // ── OpenAPI docs ──────────────────────────────────────────────────────────────
 await app.register(swagger, {

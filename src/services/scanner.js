@@ -9,76 +9,144 @@ import { callHook } from './pluginLoader.js'
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.flv'])
 
 export async function scanLibrary(db, library, log) {
+  log.info(`[scan] Starting library "${library.name}" (id=${library.id}, type=${library.type})`)
+  log.info(`[scan] Paths: ${library.paths.join(', ')}`)
+
   await db.query('UPDATE libraries SET scan_status=$1 WHERE id=$2', ['scanning', library.id])
 
   const settings = await getSettings(db)
   const tmdbOpts = {
-    apiKey: settings['tmdb.api_key'] || process.env.TMDB_API_KEY,
-    language: settings['tmdb.language'] ?? 'en',
-    enabled: settings['tmdb.enabled'] !== false,
+    apiKey:      settings['tmdb.api_key'] || process.env.TMDB_API_KEY,
+    language:    settings['tmdb.language'] ?? 'en',
+    enabled:     settings['tmdb.enabled'] !== false,
     nfoPriority: settings['metadata.nfo_priority'] !== false,
   }
+
+  log.info(`[scan] TMDB enabled=${tmdbOpts.enabled}, hasKey=${!!tmdbOpts.apiKey}, language=${tmdbOpts.language}`)
 
   try {
     let itemCount = 0
     for (const rootPath of library.paths) {
-      log.info(`Scanning path: ${rootPath} (library: ${library.name}, type: ${library.type})`)
-      if (library.type === 'movies') itemCount += await scanMovies(db, library, rootPath, tmdbOpts, log)
-      else if (library.type === 'series' || library.type === 'tv') itemCount += await scanTv(db, library, rootPath, tmdbOpts, log)
-      else log.warn(`Unknown library type "${library.type}" — skipping path ${rootPath}`)
+      log.info(`[scan] → Scanning path: ${rootPath}`)
+      if (library.type === 'movies') {
+        itemCount += await scanMovies(db, library, rootPath, tmdbOpts, log)
+      } else if (library.type === 'series' || library.type === 'tv') {
+        itemCount += await scanTv(db, library, rootPath, tmdbOpts, log)
+      } else {
+        log.warn(`[scan] Unknown library type "${library.type}" — skipping ${rootPath}`)
+      }
     }
-    log.info(`Scan complete for "${library.name}": ${itemCount} new item(s)`)
+
+    log.info(`[scan] ✓ Library "${library.name}" complete — ${itemCount} new item(s) added`)
     await db.query(
       'UPDATE libraries SET scan_status=$1, last_scanned_at=now() WHERE id=$2',
       ['idle', library.id]
     )
     callHook('scan.complete', { library, itemCount }, log).catch(() => {})
   } catch (err) {
-    log.error({ err }, `Scan failed for library "${library.name}"`)
+    log.error({ err }, `[scan] ✗ Library "${library.name}" failed: ${err.message}`)
     await db.query('UPDATE libraries SET scan_status=$1 WHERE id=$2', ['error', library.id])
     throw err
   }
 }
 
 async function scanMovies(db, library, rootPath, tmdbOpts, log) {
-  const entries = await readdir(rootPath, { withFileTypes: true })
+  let entries
+  try {
+    entries = await readdir(rootPath, { withFileTypes: true })
+  } catch (err) {
+    log.error(`[scan] Cannot read directory "${rootPath}": ${err.message}`)
+    throw err
+  }
+
+  log.info(`[scan] Found ${entries.length} entries in ${rootPath}`)
   let count = 0
 
   for (const entry of entries) {
     const fullPath = join(rootPath, entry.name)
 
     if (entry.isDirectory()) {
-      const files = await readdir(fullPath)
+      let files
+      try {
+        files = await readdir(fullPath)
+      } catch (err) {
+        log.warn(`[scan] Cannot read subdirectory "${fullPath}": ${err.message} — skipping`)
+        continue
+      }
+
       const videoFile = files.find(f => VIDEO_EXTENSIONS.has(extname(f).toLowerCase()))
-      if (!videoFile) continue
+      if (!videoFile) {
+        log.debug(`[scan] No video file in "${entry.name}" — skipping`)
+        continue
+      }
+
       const filePath = join(fullPath, videoFile)
-      const nfoPath = files.find(f => f.endsWith('.nfo')) ? join(fullPath, files.find(f => f.endsWith('.nfo'))) : null
+      const nfoFile  = files.find(f => f.endsWith('.nfo'))
+      const nfoPath  = nfoFile ? join(fullPath, nfoFile) : null
+
+      log.info(`[scan] Processing movie dir: ${entry.name} → ${videoFile}`)
       if (await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log)) count++
+
     } else if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+      log.info(`[scan] Processing movie file: ${entry.name}`)
       if (await upsertMovie(db, library, fullPath, null, tmdbOpts, log)) count++
+
+    } else {
+      log.debug(`[scan] Skipping non-video entry: ${entry.name}`)
     }
   }
+
+  log.info(`[scan] Movies path done — ${count} new item(s) from ${rootPath}`)
   return count
 }
 
-// Returns true if a new item was inserted.
 async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
   const existing = await db.query('SELECT id FROM media_items WHERE file_path=$1', [filePath])
-  if (existing.rows.length) return false
+  if (existing.rows.length) {
+    log.debug(`[scan] Already in DB, skipping: ${basename(filePath)}`)
+    return false
+  }
 
-  const nfo = nfoPath ? await parseNfo(nfoPath) : {}
+  const nfo   = nfoPath ? await parseNfo(nfoPath).catch(e => { log.warn(`[scan] NFO parse failed (${nfoPath}): ${e.message}`); return {} }) : {}
   const title = nfo.title ?? guessTitle(filePath)
-  const year = nfo.year ?? guessYear(filePath)
+  const year  = nfo.year  ?? guessYear(filePath)
 
-  const [tmdbMeta, fileInfo] = await Promise.all([
-    (tmdbOpts.enabled && tmdbOpts.apiKey && !nfo.skipTmdb)
-      ? fetchMovieMetadata(title, year, tmdbOpts).catch(() => ({}))
-      : {},
-    probeFile(db, filePath).catch(() => null),
-  ])
+  log.info(`[scan] New movie — title="${title}" year=${year ?? 'unknown'} file=${basename(filePath)}`)
 
-  // Plugin metadata hook: each plugin can return a partial metadata object.
-  // Results are merged in order, after TMDB and NFO, so plugins have final say.
+  if (nfoPath) log.debug(`[scan] NFO: ${nfoPath} → title="${nfo.title ?? '(none)'}"`)
+
+  // TMDB
+  let tmdbMeta = {}
+  if (tmdbOpts.enabled && tmdbOpts.apiKey && !nfo.skipTmdb) {
+    log.info(`[scan] Fetching TMDB metadata for "${title}" (${year ?? '?'})`)
+    try {
+      tmdbMeta = await fetchMovieMetadata(title, year, tmdbOpts)
+      if (tmdbMeta.tmdb_id) {
+        log.info(`[scan] TMDB match: "${tmdbMeta.title}" (id=${tmdbMeta.tmdb_id})`)
+      } else {
+        log.warn(`[scan] No TMDB match found for "${title}"`)
+      }
+    } catch (err) {
+      log.warn(`[scan] TMDB fetch failed for "${title}": ${err.message}`)
+    }
+  } else if (!tmdbOpts.apiKey) {
+    log.debug(`[scan] Skipping TMDB — no API key configured`)
+  }
+
+  // Probe
+  log.info(`[scan] Probing file: ${basename(filePath)}`)
+  let fileInfo = null
+  try {
+    fileInfo = await probeFile(db, filePath)
+    if (fileInfo) {
+      log.info(`[scan] Probe result: ${fileInfo.video?.codec ?? '?'} ${fileInfo.video?.width ?? '?'}×${fileInfo.video?.height ?? '?'} / ${fileInfo.audio?.codec ?? '?'} / ${Math.round((fileInfo.duration_secs ?? 0) / 60)}min`)
+    } else {
+      log.warn(`[scan] Probe returned null for ${basename(filePath)} — no transcoder available?`)
+    }
+  } catch (err) {
+    log.warn(`[scan] Probe failed for ${basename(filePath)}: ${err.message}`)
+  }
+
   const pluginResults = await callHook('metadata.movie', { title, year, tmdbMeta, nfo }, log)
   let merged = tmdbOpts.nfoPriority ? { ...tmdbMeta, ...nfo } : { ...nfo, ...tmdbMeta }
   for (const result of pluginResults) merged = { ...merged, ...result }
@@ -105,42 +173,74 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
   ])
 
   if (rows[0]) {
-    // Fire-and-forget: notify plugins a new item was added
+    log.info(`[scan] ✓ Inserted movie "${rows[0].title}" (${rows[0].year ?? '?'}) tmdb=${rows[0].tmdb_id ?? 'none'}`)
     callHook('media.added', { type: 'movie', ...rows[0] }, log).catch(() => {})
+  } else {
+    log.warn(`[scan] Insert returned no row for "${title}" — possible conflict`)
   }
+
   return !!rows[0]
 }
 
 async function scanTv(db, library, rootPath, tmdbOpts, log) {
-  const seriesDirs = await readdir(rootPath, { withFileTypes: true })
+  let seriesDirs
+  try {
+    seriesDirs = await readdir(rootPath, { withFileTypes: true })
+  } catch (err) {
+    log.error(`[scan] Cannot read TV directory "${rootPath}": ${err.message}`)
+    throw err
+  }
+
+  const seriesFolders = seriesDirs.filter(e => e.isDirectory())
+  log.info(`[scan] Found ${seriesFolders.length} series folder(s) in ${rootPath}`)
   let count = 0
 
-  for (const seriesEntry of seriesDirs) {
-    if (!seriesEntry.isDirectory()) continue
+  for (const seriesEntry of seriesFolders) {
     const seriesPath = join(rootPath, seriesEntry.name)
+    log.info(`[scan] Processing series: ${seriesEntry.name}`)
 
-    const files = await readdir(seriesPath)
-    const nfoPath = files.find(f => f === 'tvshow.nfo') ? join(seriesPath, 'tvshow.nfo') : null
-    const nfo = nfoPath ? await parseNfo(nfoPath) : {}
-    const title = nfo.title ?? seriesEntry.name
+    let files
+    try {
+      files = await readdir(seriesPath)
+    } catch (err) {
+      log.warn(`[scan] Cannot read series dir "${seriesPath}": ${err.message} — skipping`)
+      continue
+    }
 
+    const nfoFile = files.find(f => f === 'tvshow.nfo')
+    const nfoPath = nfoFile ? join(seriesPath, nfoFile) : null
+    const nfo     = nfoPath ? await parseNfo(nfoPath).catch(e => { log.warn(`[scan] NFO parse failed: ${e.message}`); return {} }) : {}
+    const title   = nfo.title ?? seriesEntry.name
+
+    // TMDB
     let meta = {}
     if (tmdbOpts.enabled && tmdbOpts.apiKey) {
-      meta = await fetchSeriesMetadata(title, tmdbOpts).catch(() => ({}))
+      log.info(`[scan] Fetching TMDB series metadata for "${title}"`)
+      try {
+        meta = await fetchSeriesMetadata(title, tmdbOpts)
+        if (meta.tmdb_id) {
+          log.info(`[scan] TMDB match: "${meta.title}" (id=${meta.tmdb_id})`)
+        } else {
+          log.warn(`[scan] No TMDB match for series "${title}"`)
+        }
+      } catch (err) {
+        log.warn(`[scan] TMDB fetch failed for series "${title}": ${err.message}`)
+      }
     }
 
     const pluginResults = await callHook('metadata.series', { title, tmdbMeta: meta, nfo }, log)
     let merged = tmdbOpts.nfoPriority ? { ...meta, ...nfo } : { ...nfo, ...meta }
     for (const result of pluginResults) merged = { ...merged, ...result }
 
-    // Check if this series already exists (match by tmdb_id when available, else title in library)
     const existingQ = merged.tmdb_id
       ? await db.query(`SELECT id FROM media_items WHERE tmdb_id=$1 AND library_id=$2`, [merged.tmdb_id, library.id])
       : await db.query(`SELECT id FROM media_items WHERE title=$1 AND library_id=$2 AND type='series'`, [merged.title ?? title, library.id])
 
     let seriesId = existingQ.rows[0]?.id
 
-    if (!seriesId) {
+    if (seriesId) {
+      log.debug(`[scan] Series "${title}" already in DB (id=${seriesId}) — scanning episodes only`)
+    } else {
       const { rows } = await db.query(`
         INSERT INTO media_items(library_id, type, title, sort_title, year, tmdb_id, imdb_id, plot, genres, poster_url, backdrop_url, rating, nfo_path, metadata)
         VALUES($1,'series',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
@@ -153,28 +253,56 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
         merged.rating ?? null, nfoPath, JSON.stringify(merged)
       ])
       seriesId = rows[0]?.id
-      if (rows[0]) callHook('media.added', { type: 'series', ...rows[0] }, log).catch(() => {})
-      count++
+      if (rows[0]) {
+        log.info(`[scan] ✓ Inserted series "${rows[0].title}" tmdb=${rows[0].tmdb_id ?? 'none'}`)
+        callHook('media.added', { type: 'series', ...rows[0] }, log).catch(() => {})
+        count++
+      } else {
+        log.warn(`[scan] Series insert returned no row for "${title}"`)
+      }
     }
 
-    if (!seriesId) continue
+    if (!seriesId) {
+      log.warn(`[scan] No seriesId for "${title}" — skipping episode scan`)
+      continue
+    }
 
     const seasonDirs = (await readdir(seriesPath, { withFileTypes: true })).filter(e => e.isDirectory())
-    for (const seasonEntry of seasonDirs) {
-      const seasonMatch = seasonEntry.name.match(/season\s*(\d+)/i)
-      const seasonNumber = seasonMatch ? parseInt(seasonMatch[1]) : 0
-      const seasonPath = join(seriesPath, seasonEntry.name)
-      const episodeFiles = await readdir(seasonPath)
+    log.info(`[scan] "${title}": ${seasonDirs.length} season dir(s)`)
 
-      for (const epFile of episodeFiles) {
-        if (!VIDEO_EXTENSIONS.has(extname(epFile).toLowerCase())) continue
-        const epMatch = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
+    for (const seasonEntry of seasonDirs) {
+      const seasonMatch  = seasonEntry.name.match(/season\s*(\d+)/i)
+      const seasonNumber = seasonMatch ? parseInt(seasonMatch[1]) : 0
+      const seasonPath   = join(seriesPath, seasonEntry.name)
+
+      let episodeFiles
+      try {
+        episodeFiles = await readdir(seasonPath)
+      } catch (err) {
+        log.warn(`[scan] Cannot read season dir "${seasonPath}": ${err.message} — skipping`)
+        continue
+      }
+
+      const videoFiles = episodeFiles.filter(f => VIDEO_EXTENSIONS.has(extname(f).toLowerCase()))
+      log.info(`[scan] "${title}" S${seasonNumber}: ${videoFiles.length} episode file(s)`)
+
+      for (const epFile of videoFiles) {
+        const epMatch       = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
         const episodeNumber = epMatch ? parseInt(epMatch[2]) : 0
-        const filePath = join(seasonPath, epFile)
-        const epNfoFile = epFile.replace(extname(epFile), '.nfo')
-        const epNfoPath = episodeFiles.includes(epNfoFile) ? join(seasonPath, epNfoFile) : null
-        const epNfo = epNfoPath ? await parseNfo(epNfoPath) : {}
-        const fileInfo = await probeFile(db, filePath).catch(() => null)
+        const filePath      = join(seasonPath, epFile)
+        const epNfoFile     = epFile.replace(extname(epFile), '.nfo')
+        const epNfoPath     = episodeFiles.includes(epNfoFile) ? join(seasonPath, epNfoFile) : null
+        const epNfo         = epNfoPath ? await parseNfo(epNfoPath).catch(() => ({})) : {}
+
+        log.info(`[scan] Episode S${String(seasonNumber).padStart(2,'0')}E${String(episodeNumber).padStart(2,'0')} — ${epFile}`)
+
+        let fileInfo = null
+        try {
+          fileInfo = await probeFile(db, filePath)
+          if (!fileInfo) log.warn(`[scan] Probe returned null for ${epFile}`)
+        } catch (err) {
+          log.warn(`[scan] Probe failed for ${epFile}: ${err.message}`)
+        }
 
         await db.query(`
           INSERT INTO episodes(
@@ -194,6 +322,8 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
       }
     }
   }
+
+  log.info(`[scan] TV path done — ${count} new series from ${rootPath}`)
   return count
 }
 
