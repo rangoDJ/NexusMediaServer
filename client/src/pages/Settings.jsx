@@ -229,17 +229,43 @@ const LIBRARY_TYPES = [
 ]
 
 function LibraryTab({ rows, save }) {
-  const [libraries, setLibraries]   = useState([])
-  const [scanning,  setScanning]    = useState({})   // id → bool
-  const [form,      setForm]        = useState({ name: '', type: 'movies', paths: [''] })
-  const [adding,    setAdding]      = useState(false)
-  const [error,     setError]       = useState(null)
+  const [libraries, setLibraries] = useState([])
+  const [form,      setForm]      = useState({ name: '', type: 'movies', paths: [''] })
+  const [adding,    setAdding]    = useState(false)
+  const [error,     setError]     = useState(null)
 
-  useEffect(() => { loadLibraries() }, [])
+  useEffect(() => {
+    loadLibraries()
+  }, [])
+
+  // Poll every 3 s while any library is scanning so the UI stays live.
+  useEffect(() => {
+    const anyScanning = libraries.some(l => l.scan_status === 'scanning')
+    if (!anyScanning) return
+    const timer = setTimeout(loadLibraries, 3000)
+    return () => clearTimeout(timer)
+  }, [libraries])
 
   async function loadLibraries() {
     const { data } = await api.get('/libraries')
     setLibraries(data)
+  }
+
+  async function triggerScan(id) {
+    // Optimistically mark as scanning so the button disables immediately.
+    setLibraries(ls => ls.map(l => l.id === id ? { ...l, scan_status: 'scanning' } : l))
+    try {
+      await api.post(`/libraries/${id}/scan`)
+    } catch {
+      // Revert on error; next poll will get the real state.
+      loadLibraries()
+    }
+  }
+
+  async function deleteLibrary(id, name) {
+    if (!confirm(`Delete library "${name}"?\n\nMedia items will be removed from the database. Your files will not be deleted.`)) return
+    await api.delete(`/libraries/${id}`)
+    setLibraries(ls => ls.filter(l => l.id !== id))
   }
 
   async function addLibrary(e) {
@@ -259,24 +285,15 @@ function LibraryTab({ rows, save }) {
     }
   }
 
-  async function deleteLibrary(id, name) {
-    if (!confirm(`Delete library "${name}"?\n\nMedia items will be removed from the database. Your files will not be deleted.`)) return
-    await api.delete(`/libraries/${id}`)
-    setLibraries(ls => ls.filter(l => l.id !== id))
-  }
-
-  async function scanLibrary(id) {
-    setScanning(s => ({ ...s, [id]: true }))
-    try {
-      await api.post(`/libraries/${id}/scan`)
-      loadLibraries()
-    } finally {
-      setScanning(s => { const n = { ...s }; delete n[id]; return n })
-    }
-  }
-
   function setPath(i, value) {
     setForm(f => { const paths = [...f.paths]; paths[i] = value; return { ...f, paths } })
+  }
+
+  function ScanBadge({ lib }) {
+    if (lib.scan_status === 'scanning') return <span style={badge('#f0a500')}>scanning…</span>
+    if (lib.scan_status === 'error')    return <span style={badge('#e05555')}>scan error — check server logs</span>
+    if (lib.last_scanned_at)            return <span style={badge('#4caf7d')}>ready</span>
+    return null
   }
 
   return (
@@ -296,11 +313,10 @@ function LibraryTab({ rows, save }) {
             {libraries.map(lib => (
               <div key={lib.id} className={styles.nodeCard}>
                 <div className={styles.nodeInfo}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <strong>{lib.name}</strong>
                     <span style={badge('#7c6af7')}>{lib.type}</span>
-                    {lib.scan_status === 'scanning' && <span style={badge('#f0a500')}>scanning…</span>}
-                    {lib.scan_status === 'idle' && lib.last_scanned_at && <span style={badge('#4caf7d')}>ready</span>}
+                    <ScanBadge lib={lib} />
                   </div>
                   <span className={styles.nodeUrl}>{lib.paths?.join('  ·  ')}</span>
                   {lib.last_scanned_at && (
@@ -310,8 +326,12 @@ function LibraryTab({ rows, save }) {
                   )}
                 </div>
                 <div className={styles.nodeActions}>
-                  <button className="ghost" disabled={!!scanning[lib.id]} onClick={() => scanLibrary(lib.id)}>
-                    {scanning[lib.id] ? 'Scanning…' : 'Scan now'}
+                  <button
+                    className="ghost"
+                    disabled={lib.scan_status === 'scanning'}
+                    onClick={() => triggerScan(lib.id)}
+                  >
+                    {lib.scan_status === 'scanning' ? 'Scanning…' : 'Scan now'}
                   </button>
                   <button className="danger" onClick={() => deleteLibrary(lib.id, lib.name)}>Delete</button>
                 </div>

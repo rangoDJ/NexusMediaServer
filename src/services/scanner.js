@@ -22,16 +22,19 @@ export async function scanLibrary(db, library, log) {
   try {
     let itemCount = 0
     for (const rootPath of library.paths) {
+      log.info(`Scanning path: ${rootPath} (library: ${library.name}, type: ${library.type})`)
       if (library.type === 'movies') itemCount += await scanMovies(db, library, rootPath, tmdbOpts, log)
       else if (library.type === 'series' || library.type === 'tv') itemCount += await scanTv(db, library, rootPath, tmdbOpts, log)
+      else log.warn(`Unknown library type "${library.type}" — skipping path ${rootPath}`)
     }
+    log.info(`Scan complete for "${library.name}": ${itemCount} new item(s)`)
     await db.query(
       'UPDATE libraries SET scan_status=$1, last_scanned_at=now() WHERE id=$2',
       ['idle', library.id]
     )
-    // Let plugins react to a completed scan (e.g. send notifications, trigger post-processing)
     callHook('scan.complete', { library, itemCount }, log).catch(() => {})
   } catch (err) {
+    log.error({ err }, `Scan failed for library "${library.name}"`)
     await db.query('UPDATE libraries SET scan_status=$1 WHERE id=$2', ['error', library.id])
     throw err
   }
