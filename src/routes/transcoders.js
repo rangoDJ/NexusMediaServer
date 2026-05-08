@@ -47,9 +47,11 @@ export default async function transcoderRoutes(app) {
     return reply.code(201).send(rows[0])
   })
 
-  // All routes below require admin auth
-  app.addHook('preHandler', app.authenticate)
-  app.addHook('preHandler', requireAdmin)
+  // All routes below require admin auth — isolated in a sub-scope so the
+  // preHandler hooks don't bleed back onto /register above.
+  await app.register(async function adminRoutes(app) {
+    app.addHook('preHandler', app.authenticate)
+    app.addHook('preHandler', requireAdmin)
 
   app.get('/', async () => {
     const { rows } = await app.db.query(`
@@ -128,4 +130,5 @@ export default async function transcoderRoutes(app) {
       return reply.code(502).send({ error: 'Node unreachable' })
     }
   })
+  }) // end adminRoutes
 }
