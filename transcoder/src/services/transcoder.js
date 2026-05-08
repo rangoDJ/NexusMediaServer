@@ -1,10 +1,14 @@
 import ffmpeg from 'fluent-ffmpeg'
-import { mkdir } from 'fs/promises'
+import { mkdir, rm } from 'fs/promises'
+import { existsSync } from 'fs'
 import { join } from 'path'
 import { sessionStore } from './sessionStore.js'
 
 const HLS_BASE = process.env.HLS_OUTPUT_PATH ?? '/tmp/hls'
-const HW_ACCEL = process.env.HW_ACCEL ?? 'cpu'
+const HW_ACCEL = (process.env.HW_ACCEL ?? '').trim() || 'cpu'
+
+// Seconds to wait for the first HLS segment before declaring HW accel hung
+const HW_WATCHDOG_SECS = 15
 
 const RESOLUTION_MAP = {
   '4k':    { width: 3840, vb: '15000k' },
@@ -62,13 +66,13 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
   const videoBitrate = bitrate ? `${bitrate}k` : preset.vb
   const isH265       = codec === 'h265'
 
-  const entry = { outputDir, status: 'active', process: null }
+  const entry = { outputDir, status: 'active', process: null, watchdog: null }
   sessionStore.set(session_id, entry)
 
   function launchFfmpeg(hwAccel) {
     const { inputOptions, videoCodec, scaleFilter, extraOptions } = buildCodecConfig(hwAccel, isH265)
-    const proc = ffmpeg(file_path)
 
+    const proc = ffmpeg(file_path)
     if (inputOptions.length) proc.inputOptions(inputOptions)
 
     proc
@@ -92,17 +96,35 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
 
     entry.process = proc
 
+    // Watchdog: if HW-accelerated ffmpeg produces no output after N seconds it
+    // has likely hung at device init. Kill it and fall back to CPU.
+    if (hwAccel !== 'cpu') {
+      entry.watchdog = setTimeout(() => {
+        if (!existsSync(join(outputDir, 'playlist.m3u8'))) {
+          console.warn(`[transcoder] ${hwAccel} watchdog (${HW_WATCHDOG_SECS}s) — no output yet, killing and retrying with CPU`)
+          try { proc.kill('SIGKILL') } catch {}
+          // Clear the entry process so the error handler below is a no-op
+          entry.process = null
+          launchFfmpeg('cpu')
+        }
+      }, HW_WATCHDOG_SECS * 1000)
+    }
+
     proc.on('end', () => {
+      clearTimeout(entry.watchdog)
       const s = sessionStore.get(session_id)
       if (s) s.status = 'done'
     })
 
     proc.on('error', (err) => {
+      clearTimeout(entry.watchdog)
+      // If the watchdog already swapped to CPU, ignore this stale error event
+      if (entry.process !== proc) return
+
       const s = sessionStore.get(session_id)
       if (!s) return
 
       if (hwAccel !== 'cpu') {
-        // HW acceleration failed — fall back to CPU transparently
         console.warn(`[transcoder] ${hwAccel} failed (${err.message.trim()}), retrying with CPU`)
         launchFfmpeg('cpu')
       } else {
@@ -112,6 +134,7 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
     })
 
     proc.run()
+    console.log(`[transcoder] Session ${session_id} started — codec=${videoCodec} hw=${hwAccel} file=${file_path}`)
   }
 
   launchFfmpeg(HW_ACCEL)
@@ -121,6 +144,9 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
 export function stopSession(session_id) {
   const s = sessionStore.get(session_id)
   if (!s) return
-  try { s.process.kill('SIGKILL') } catch {}
+  clearTimeout(s.watchdog)
+  try { s.process?.kill('SIGKILL') } catch {}
   sessionStore.delete(session_id)
+  // Best-effort cleanup of output directory
+  rm(s.outputDir, { recursive: true, force: true }).catch(() => {})
 }
