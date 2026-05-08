@@ -44,6 +44,7 @@ export default function MovieDetail() {
           <Player
             mediaItemId={playing.mediaItemId}
             episodeId={playing.episodeId}
+            title={playing.title}
           />
         </div>
       </div>

@@ -1,44 +1,15 @@
-.page {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-}
-
-/* ── Header ─────────────────────────────────────────────────────────────── */
-.header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 32px;
-  height: 60px;
-  background: linear-gradient(to bottom, var(--bg) 70%, transparent);
-}
-
-.logo {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--accent);
-  letter-spacing: 0.06em;
-}
-
-.nav {
-  display: flex;
-  gap: 8px;
-}
-
 /* ── Main content ────────────────────────────────────────────────────────── */
 .main {
   flex: 1;
-  padding: 8px 32px 60px;
+  padding: 24px 32px 60px;
+  max-width: 1800px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 /* ── Row section ─────────────────────────────────────────────────────────── */
 .section {
-  margin-bottom: 40px;
+  margin-bottom: 36px;
 }
 
 .sectionTitle {
@@ -70,6 +41,7 @@
   border-radius: 0;
   text-align: left;
   border: none;
+  cursor: pointer;
   transition: transform 0.15s;
 }
 
@@ -164,3 +136,35 @@
   font-size: 15px;
 }
 
+/* ── Skeleton loader ─────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface) 0%,
+    var(--surface2) 50%,
+    var(--surface) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius);
+}
+
+.skelCard { pointer-events: none; }
+
+.skelLine {
+  height: 12px;
+  margin-top: 8px;
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Mobile ──────────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .main { padding: 16px 12px 60px; }
+  .card, .poster { width: 120px; }
+  .poster { height: 180px; }
+  .cardTitle { max-width: 120px; }
+}

@@ -6,27 +6,53 @@ const DEFAULT_DIRECT_PLAY_CONTAINERS = new Set(['mp4', 'webm', 'm4v'])
 export default async function mediaRoutes(app) {
   app.addHook('preHandler', app.authenticate)
 
-  // List media in a library (paginated)
+  // List media (paginated). Supports filtering and sorting for the home page rows.
+  // sort = alphabetical | recently_added | random | year_desc | rating
   app.get('/', async (request) => {
-    const { library_id, type, search, page = 1, limit = 50 } = request.query
+    const { library_id, type, search, genre, sort = 'alphabetical', page = 1, limit = 50 } = request.query
     const offset = (page - 1) * limit
     const params = []
     const conditions = []
 
     if (library_id) { params.push(library_id); conditions.push(`library_id=$${params.length}`) }
-    if (type) { params.push(type); conditions.push(`type=$${params.length}`) }
-    if (search) { params.push(`%${search}%`); conditions.push(`title ILIKE $${params.length}`) }
+    if (type)       { params.push(type);       conditions.push(`type=$${params.length}`) }
+    if (search)     { params.push(`%${search}%`); conditions.push(`title ILIKE $${params.length}`) }
+    if (genre)      { params.push(genre);      conditions.push(`$${params.length} = ANY(genres)`) }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const ORDER_BY = {
+      alphabetical:   'sort_title NULLS LAST, title',
+      recently_added: 'created_at DESC NULLS LAST',
+      random:         'RANDOM()',
+      year_desc:      'year DESC NULLS LAST, title',
+      rating:         'rating DESC NULLS LAST, title',
+    }
+    const orderBy = ORDER_BY[sort] ?? ORDER_BY.alphabetical
+    const where   = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+
     const { rows } = await app.db.query(
       `SELECT id, library_id, type, title, year, genres, poster_url, backdrop_url, rating,
-              duration_secs, video_codec, audio_codec, container, width, height
+              duration_secs, video_codec, audio_codec, container, width, height, created_at
        FROM media_items ${where}
-       ORDER BY sort_title NULLS LAST, title
+       ORDER BY ${orderBy}
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
     )
     return rows
+  })
+
+  // Distinct genre list (for filter dropdowns)
+  app.get('/genres', async (request) => {
+    const { library_id } = request.query
+    const params = []
+    let where = ''
+    if (library_id) { params.push(library_id); where = `WHERE library_id=$1` }
+    const { rows } = await app.db.query(
+      `SELECT DISTINCT unnest(genres) AS genre
+       FROM media_items ${where}
+       ORDER BY genre`,
+      params
+    )
+    return rows.map(r => r.genre).filter(Boolean)
   })
 
   // Items the user started but hasn't finished, newest first

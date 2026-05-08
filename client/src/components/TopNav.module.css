@@ -1,0 +1,203 @@
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 28px;
+  height: 56px;
+  background: rgba(15, 15, 19, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.5px;
+  text-decoration: none;
+  margin-right: 16px;
+}
+
+.navLink {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.navLink:hover { color: var(--text); background: var(--surface); }
+.navLink.active { color: var(--text); }
+
+/* ── Libraries dropdown ──────────────────────────────────────────────── */
+.libsWrap {
+  position: relative;
+}
+
+.libsMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+}
+
+.libItem {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.libItem:hover { background: var(--surface2); }
+
+.libName { font-weight: 500; }
+.libType {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── Search ──────────────────────────────────────────────────────────── */
+.search {
+  flex: 1;
+  max-width: 480px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 auto;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-muted);
+  font-size: 16px;
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  height: 36px;
+  padding: 0 14px 0 34px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.searchInput:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface2);
+}
+.searchInput::placeholder { color: var(--text-muted); }
+
+/* ── User menu ───────────────────────────────────────────────────────── */
+.right {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s;
+}
+.avatar:hover { transform: scale(1.06); }
+.avatar:active { transform: scale(0.96); }
+
+.userMenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+}
+
+.userInfo {
+  padding: 10px 12px;
+}
+.userName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+.userRole {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: capitalize;
+  margin: 2px 0 0;
+}
+
+.menuDivider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.menuItem:hover { background: var(--surface2); }
+
+@media (max-width: 720px) {
+  .nav { padding: 0 12px; gap: 8px; }
+  .navLink { padding: 6px 8px; font-size: 13px; }
+  .search { max-width: none; }
+}

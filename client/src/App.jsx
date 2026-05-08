@@ -7,6 +7,7 @@ import Register from './pages/Register.jsx'
 import Setup from './pages/Setup.jsx'
 import Home from './pages/Home.jsx'
 import MovieDetail from './pages/MovieDetail.jsx'
+import Layout from './components/Layout.jsx'
 
 function useAuth() {
   return !!localStorage.getItem('nexus_token')
@@ -15,13 +16,13 @@ function useAuth() {
 function RequireAuth({ children }) {
   const authed = useAuth()
   if (!authed) return <Navigate to="/login" replace />
-  return children
+  return <Layout>{children}</Layout>
 }
 
 function RequireAdmin({ children }) {
   const authed = useAuth()
   if (!authed) return <Navigate to="/login" replace />
-  return children
+  return <Layout>{children}</Layout>
 }
 
 export default function App() {
