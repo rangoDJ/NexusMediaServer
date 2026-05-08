@@ -23,7 +23,7 @@ export async function scanLibrary(db, library, log) {
     let itemCount = 0
     for (const rootPath of library.paths) {
       if (library.type === 'movies') itemCount += await scanMovies(db, library, rootPath, tmdbOpts, log)
-      else if (library.type === 'tv') itemCount += await scanTv(db, library, rootPath, tmdbOpts, log)
+      else if (library.type === 'series' || library.type === 'tv') itemCount += await scanTv(db, library, rootPath, tmdbOpts, log)
     }
     await db.query(
       'UPDATE libraries SET scan_status=$1, last_scanned_at=now() WHERE id=$2',
@@ -130,22 +130,31 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
     let merged = tmdbOpts.nfoPriority ? { ...meta, ...nfo } : { ...nfo, ...meta }
     for (const result of pluginResults) merged = { ...merged, ...result }
 
-    const { rows } = await db.query(`
-      INSERT INTO media_items(library_id, type, title, sort_title, year, tmdb_id, imdb_id, plot, genres, poster_url, backdrop_url, rating, nfo_path, metadata)
-      VALUES($1,'series',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-      ON CONFLICT (file_path) DO NOTHING
-      RETURNING id, title, year, tmdb_id
-    `, [
-      library.id, merged.title ?? title, merged.sort_title ?? null, merged.year ?? null,
-      merged.tmdb_id ?? null, merged.imdb_id ?? null, merged.plot ?? null,
-      merged.genres ?? null, merged.poster_url ?? null, merged.backdrop_url ?? null,
-      merged.rating ?? null, nfoPath, JSON.stringify(merged)
-    ])
+    // Check if this series already exists (match by tmdb_id when available, else title in library)
+    const existingQ = merged.tmdb_id
+      ? await db.query(`SELECT id FROM media_items WHERE tmdb_id=$1 AND library_id=$2`, [merged.tmdb_id, library.id])
+      : await db.query(`SELECT id FROM media_items WHERE title=$1 AND library_id=$2 AND type='series'`, [merged.title ?? title, library.id])
 
-    const seriesId = rows[0]?.id
+    let seriesId = existingQ.rows[0]?.id
+
+    if (!seriesId) {
+      const { rows } = await db.query(`
+        INSERT INTO media_items(library_id, type, title, sort_title, year, tmdb_id, imdb_id, plot, genres, poster_url, backdrop_url, rating, nfo_path, metadata)
+        VALUES($1,'series',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        ON CONFLICT DO NOTHING
+        RETURNING id, title, year, tmdb_id
+      `, [
+        library.id, merged.title ?? title, merged.sort_title ?? null, merged.year ?? null,
+        merged.tmdb_id ?? null, merged.imdb_id ?? null, merged.plot ?? null,
+        merged.genres ?? null, merged.poster_url ?? null, merged.backdrop_url ?? null,
+        merged.rating ?? null, nfoPath, JSON.stringify(merged)
+      ])
+      seriesId = rows[0]?.id
+      if (rows[0]) callHook('media.added', { type: 'series', ...rows[0] }, log).catch(() => {})
+      count++
+    }
+
     if (!seriesId) continue
-    if (rows[0]) callHook('media.added', { type: 'series', ...rows[0] }, log).catch(() => {})
-    count++
 
     const seasonDirs = (await readdir(seriesPath, { withFileTypes: true })).filter(e => e.isDirectory())
     for (const seasonEntry of seasonDirs) {
