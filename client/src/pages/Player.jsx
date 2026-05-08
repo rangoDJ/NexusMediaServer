@@ -24,13 +24,24 @@ export default function Player({ mediaItemId, episodeId }) {
 
         const video = videoRef.current
         if (Hls.isSupported()) {
-          const hls = new Hls()
+          const token = localStorage.getItem('nexus_token')
+          const hls = new Hls({
+            xhrSetup: (xhr) => {
+              if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+            }
+          })
           hlsRef.current = hls
           hls.loadSource(data.playlist_url)
           hls.attachMedia(video)
           hls.on(Hls.Events.MANIFEST_PARSED, () => video.play())
+          hls.on(Hls.Events.ERROR, (_, d) => {
+            if (d.fatal) setError(`Stream error: ${d.details}`)
+          })
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = data.playlist_url
+          // Safari native HLS — append token as query param since XHR headers aren't injectable
+          const url = new URL(data.playlist_url, window.location.origin)
+          url.searchParams.set('token', localStorage.getItem('nexus_token') ?? '')
+          video.src = url.toString()
           video.play()
         }
       } catch (e) {

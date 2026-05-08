@@ -3,7 +3,14 @@ import { pickTranscoder, claimSession, releaseSession } from '../services/transc
 import { callHook } from '../services/pluginLoader.js'
 
 export default async function streamRoutes(app) {
-  app.addHook('preHandler', app.authenticate)
+  // Stream routes accept the JWT either as a Bearer header (hls.js xhrSetup)
+  // or as a ?token= query param (Safari native HLS, which can't inject headers).
+  app.addHook('preHandler', async (request, reply) => {
+    if (request.query.token && !request.headers.authorization) {
+      request.headers.authorization = `Bearer ${request.query.token}`
+    }
+    return app.authenticate(request, reply)
+  })
 
   // Start a stream — picks the least-loaded transcoder, creates a session there,
   // and returns an opaque playlist URL. The client never needs to know where the
@@ -53,7 +60,7 @@ export default async function streamRoutes(app) {
     const sessionId = rows[0].id
     return {
       session_id: sessionId,
-      playlist_url: `/api/stream/${sessionId}/playlist.m3u8`
+      playlist_url: `/api/v1/stream/${sessionId}/playlist.m3u8`
     }
   })
 
@@ -76,7 +83,7 @@ export default async function streamRoutes(app) {
     // Rewrite bare segment filenames to our proxy path
     const rewritten = playlist.replace(
       /^(segment_\d+\.ts)$/gm,
-      `/api/stream/${request.params.sessionId}/$1`
+      `/api/v1/stream/${request.params.sessionId}/$1`
     )
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return rewritten
