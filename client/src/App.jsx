@@ -5,6 +5,7 @@ import Settings from './pages/Settings.jsx'
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
 import Home from './pages/Home.jsx'
+import MovieDetail from './pages/MovieDetail.jsx'
 
 function useAuth() {
   return !!localStorage.getItem('nexus_token')
@@ -51,6 +52,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<RequireAuth><Home /></RequireAuth>} />
+      <Route path="/movie/:id" element={<RequireAuth><MovieDetail /></RequireAuth>} />
       <Route path="/settings" element={<RequireAdmin><Settings /></RequireAdmin>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

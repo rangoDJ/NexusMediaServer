@@ -1,14 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
-import Player from './Player.jsx'
 import styles from './Home.module.css'
 
 export default function Home() {
   const [libraries, setLibraries] = useState([])
   const [mediaByLibrary, setMediaByLibrary] = useState({})
   const [continueWatching, setContinueWatching] = useState([])
-  const [playing, setPlaying] = useState(null) // { mediaItemId, title }
   const navigate = useNavigate()
   const user = JSON.parse(localStorage.getItem('nexus_user') || '{}')
 
@@ -34,18 +32,6 @@ export default function Home() {
     navigate('/login')
   }
 
-  if (playing) {
-    return (
-      <div className={styles.playerOverlay}>
-        <div className={styles.playerBar}>
-          <button className={`ghost ${styles.closeBtn}`} onClick={() => setPlaying(null)}>&#8592; Back</button>
-          <span className={styles.playerTitle}>{playing.title}</span>
-        </div>
-        <Player mediaItemId={playing.mediaItemId} />
-      </div>
-    )
-  }
-
   const allEmpty = libraries.length > 0 &&
     libraries.every(lib => !(mediaByLibrary[lib.id]?.length))
 
@@ -65,7 +51,7 @@ export default function Home() {
         {continueWatching.length > 0 && (
           <Section title="Continue Watching">
             {continueWatching.map(item => (
-              <MediaCard key={item.id} item={item} showProgress onPlay={setPlaying} />
+              <MediaCard key={item.id} item={item} showProgress />
             ))}
           </Section>
         )}
@@ -76,7 +62,7 @@ export default function Home() {
           return (
             <Section key={lib.id} title={lib.name}>
               {items.map(item => (
-                <MediaCard key={item.id} item={item} onPlay={setPlaying} />
+                <MediaCard key={item.id} item={item} />
               ))}
             </Section>
           )
@@ -106,19 +92,17 @@ function Section({ title, children }) {
   )
 }
 
-function MediaCard({ item, onPlay, showProgress }) {
+function MediaCard({ item, showProgress }) {
+  const navigate = useNavigate()
   const pct = showProgress && item.duration_secs > 0
     ? Math.min(100, Math.round((item.position_secs / item.duration_secs) * 100))
     : 0
 
-  const canPlay = item.type !== 'series'
-
   return (
     <button
       className={styles.card}
-      onClick={() => canPlay && onPlay({ mediaItemId: item.id, title: item.title })}
-      style={{ cursor: canPlay ? 'pointer' : 'default' }}
-      title={canPlay ? `Play ${item.title}` : `${item.title} — select an episode`}
+      onClick={() => navigate(`/movie/${item.id}`)}
+      title={item.title}
     >
       <div className={styles.poster}>
         {item.poster_url
@@ -130,7 +114,7 @@ function MediaCard({ item, onPlay, showProgress }) {
             <div className={styles.progressFill} style={{ width: `${pct}%` }} />
           </div>
         )}
-        {!canPlay && <div className={styles.seriesBadge}>SERIES</div>}
+        {item.type === 'series' && <div className={styles.seriesBadge}>SERIES</div>}
       </div>
       <p className={styles.cardTitle}>{item.title}</p>
       {item.year && <p className={styles.cardSub}>{item.year}</p>}

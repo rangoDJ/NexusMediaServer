@@ -21,19 +21,36 @@ export async function fetchMovieMetadata(title, year, { apiKey, language = 'en' 
   const result = search.results[0]
   if (!result) return {}
 
-  const { data: detail } = await tmdb.get(`/movie/${result.id}`)
+  const [{ data: detail }, { data: credits }] = await Promise.all([
+    tmdb.get(`/movie/${result.id}`),
+    tmdb.get(`/movie/${result.id}/credits`),
+  ])
+
+  const director = credits.crew?.find(c => c.job === 'Director')?.name ?? null
+  const writer   = credits.crew?.find(c => c.job === 'Screenplay' || c.job === 'Writer' || c.job === 'Story')?.name ?? null
+  const cast     = (credits.cast ?? []).slice(0, 20).map(c => ({
+    id:          c.id,
+    name:        c.name,
+    character:   c.character ?? null,
+    profile_url: c.profile_path ? `${IMAGE_BASE}/w185${c.profile_path}` : null,
+  }))
+
   return {
-    tmdb_id: String(detail.id),
-    imdb_id: detail.imdb_id ?? null,
-    title: detail.title,
-    sort_title: detail.title,
-    year: detail.release_date ? parseInt(detail.release_date.slice(0, 4)) : null,
-    plot: detail.overview ?? null,
-    tagline: detail.tagline ?? null,
-    rating: detail.vote_average ?? null,
-    genres: detail.genres?.map(g => g.name) ?? null,
-    poster_url: detail.poster_path ? `${IMAGE_BASE}/w500${detail.poster_path}` : null,
+    tmdb_id:      String(detail.id),
+    imdb_id:      detail.imdb_id ?? null,
+    title:        detail.title,
+    sort_title:   detail.title,
+    year:         detail.release_date ? parseInt(detail.release_date.slice(0, 4)) : null,
+    plot:         detail.overview ?? null,
+    tagline:      detail.tagline ?? null,
+    rating:       detail.vote_average ?? null,
+    genres:       detail.genres?.map(g => g.name) ?? null,
+    studios:      detail.production_companies?.map(c => c.name) ?? null,
+    poster_url:   detail.poster_path   ? `${IMAGE_BASE}/w500${detail.poster_path}`   : null,
     backdrop_url: detail.backdrop_path ? `${IMAGE_BASE}/w1280${detail.backdrop_path}` : null,
+    director,
+    writer,
+    cast,
   }
 }
 
