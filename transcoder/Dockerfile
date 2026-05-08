@@ -1,5 +1,7 @@
 FROM node:22-alpine AS base
-RUN apk add --no-cache ffmpeg
+# ffmpeg with VAAPI support (open-source Intel iHD driver for Gen8+ iGPU)
+# QSV is not available in Alpine ffmpeg — use HW_ACCEL=vaapi for Intel hardware encoding
+RUN apk add --no-cache ffmpeg intel-media-driver libva-utils
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev

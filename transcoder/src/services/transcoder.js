@@ -7,6 +7,12 @@ import { sessionStore } from './sessionStore.js'
 const HLS_BASE = process.env.HLS_OUTPUT_PATH ?? '/tmp/hls'
 const HW_ACCEL = (process.env.HW_ACCEL ?? '').trim() || 'cpu'
 
+// QSV requires Intel libmfx/oneVPL which is not in Alpine's ffmpeg build.
+// Redirect QSV to VAAPI which uses the same iGPU via the open-source iHD driver.
+if (HW_ACCEL === 'qsv') {
+  console.warn('[transcoder] HW_ACCEL=qsv is not supported in this build (Alpine ffmpeg lacks libmfx). Set HW_ACCEL=vaapi to use Intel iGPU hardware encoding via VAAPI.')
+}
+
 // Seconds to wait for the first HLS segment before declaring HW accel hung
 const HW_WATCHDOG_SECS = 15
 
