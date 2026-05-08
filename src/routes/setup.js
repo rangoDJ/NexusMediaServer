@@ -96,7 +96,7 @@ export default async function setupRoutes(app) {
       if (tmdb_api_key?.trim()) {
         await client.query(
           `UPDATE settings SET value = $1 WHERE key = 'metadata.tmdb_api_key'`,
-          [tmdb_api_key.trim()]
+          [JSON.stringify(tmdb_api_key.trim())]
         )
         invalidateSettingsCache()
       }
