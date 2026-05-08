@@ -47,13 +47,20 @@ function buildCodecConfig(hwAccel, isH265) {
         extraOptions: [],
       }
     }
-    case 'qsv':
+    case 'qsv': {
+      const device = process.env.VAAPI_DEVICE ?? '/dev/dri/renderD128'
       return {
-        inputOptions: ['-hwaccel qsv', '-hwaccel_output_format qsv'],
+        inputOptions: [
+          `-init_hw_device qsv=qsv0,child_device=${device}`,
+          '-hwaccel qsv',
+          '-hwaccel_output_format qsv',
+          '-filter_hw_device qsv0',
+        ],
         videoCodec:   isH265 ? 'hevc_qsv' : 'h264_qsv',
-        scaleFilter:  w => `scale_qsv=${w}:-2`,
+        scaleFilter:  w => `scale_qsv=w=${w}:h=-2`,
         extraOptions: [],
       }
+    }
     default: // cpu
       return {
         inputOptions: [],

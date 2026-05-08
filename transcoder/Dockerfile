@@ -1,20 +1,16 @@
-FROM ubuntu:24.04 AS base
-ENV DEBIAN_FRONTEND=noninteractive
+FROM node:22-bookworm-slim AS base
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg && \
-    # Node.js 22 via NodeSource
-    mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
-        > /etc/apt/sources.list.d/nodesource.list && \
-    # Universe repo for ffmpeg and Intel VAAPI driver
-    echo "deb http://archive.ubuntu.com/ubuntu noble universe" \
-        > /etc/apt/sources.list.d/universe.list && \
-    apt-get update && apt-get install -y --no-install-recommends \
-        nodejs ffmpeg intel-media-va-driver && \
-    rm -rf /var/lib/apt/lists/*
+# jellyfin-ffmpeg is a custom ffmpeg build with Intel QSV (oneVPL), VAAPI,
+# and NVENC support — the same binary Jellyfin uses for hardware transcoding.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+    curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian bookworm main" \
+        > /etc/apt/sources.list.d/jellyfin.list && \
+    apt-get update && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -s /usr/lib/jellyfin-ffmpeg/ffmpeg  /usr/local/bin/ffmpeg && \
+    ln -s /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
