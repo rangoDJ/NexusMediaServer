@@ -33,6 +33,25 @@ export default function MovieDetail() {
       .catch(() => setError('Could not load this title.'))
   }, [id])
 
+  // When an episode finishes, auto-advance to the next one in the series
+  // (next episode this season, else first episode of the next season).
+  function advanceToNextEpisode() {
+    if (!playing?.episodeId || !item?.episodes?.length) {
+      setPlaying(null)
+      return
+    }
+    const idx  = item.episodes.findIndex(e => e.id === playing.episodeId)
+    const next = idx >= 0 ? item.episodes[idx + 1] : null
+    if (!next) {
+      setPlaying(null) // end of series
+      return
+    }
+    setPlaying({
+      episodeId: next.id,
+      title: `${item.title} · S${pad(next.season_number)}E${pad(next.episode_number)}${next.title ? ` — ${next.title}` : ''}`,
+    })
+  }
+
   if (playing && item) {
     return (
       <div className={styles.playerOverlay}>
@@ -42,9 +61,11 @@ export default function MovieDetail() {
         </div>
         <div style={{ flex: 1, height: 0 }}>
           <Player
+            key={playing.episodeId ?? playing.mediaItemId}
             mediaItemId={playing.mediaItemId}
             episodeId={playing.episodeId}
             title={playing.title}
+            onEnded={advanceToNextEpisode}
           />
         </div>
       </div>
