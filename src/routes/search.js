@@ -32,17 +32,17 @@ export default async function searchRoutes(app) {
       [pattern]
     )
 
-    // People — flatten metadata->cast and de-duplicate by TMDB person id.
-    // Pick one profile_url per person (any one is fine).
+    // People — backed by the media_cast index table (kept in sync via trigger).
+    // Trigram GIN index on name makes this fast even for libraries with
+    // tens of thousands of items.
     const peopleQ = await app.db.query(
-      `SELECT DISTINCT ON (cast_member->>'id')
-              cast_member->>'id'          AS id,
-              cast_member->>'name'        AS name,
-              cast_member->>'profile_url' AS profile_url
-       FROM media_items, jsonb_array_elements(metadata->'cast') AS cast_member
-       WHERE cast_member->>'name' ILIKE $1
-         AND cast_member->>'id' IS NOT NULL
-       ORDER BY cast_member->>'id'
+      `SELECT DISTINCT ON (person_id)
+              person_id   AS id,
+              name,
+              profile_url
+       FROM media_cast
+       WHERE name ILIKE $1
+       ORDER BY person_id, name
        LIMIT 30`,
       [pattern]
     )
