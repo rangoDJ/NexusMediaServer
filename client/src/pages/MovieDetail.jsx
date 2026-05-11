@@ -203,14 +203,19 @@ export default function MovieDetail() {
           <h2 className={styles.castHeading}>Cast &amp; Crew</h2>
           <div className={styles.castRow}>
             {cast.map(person => (
-              <div key={person.id} className={styles.castCard}>
+              <button
+                key={person.id}
+                className={styles.castCard}
+                onClick={() => navigate(`/person/${person.id}`)}
+                title={person.name}
+              >
                 {person.profile_url
                   ? <img className={styles.castPhoto} src={person.profile_url} alt={person.name} loading="lazy" />
                   : <div className={styles.castPhotoPlaceholder}>{person.name[0]}</div>
                 }
                 <p className={styles.castName}>{person.name}</p>
                 {person.character && <p className={styles.castRole}>{person.character}</p>}
-              </div>
+              </button>
             ))}
           </div>
         </div>

@@ -22,6 +22,8 @@ import { startHealthPoller } from './services/transcoderPool.js'
 import { loadPlugins, callHook } from './services/pluginLoader.js'
 import pluginRoutes from './routes/plugins.js'
 import setupRoutes from './routes/setup.js'
+import searchRoutes from './routes/search.js'
+import peopleRoutes from './routes/people.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
@@ -74,6 +76,8 @@ await app.register(transcoderRoutes, { prefix: '/api/v1/transcoders' })
 await app.register(usersRoutes,      { prefix: '/api/v1/users' })
 await app.register(settingsRoutes,   { prefix: '/api/v1/settings' })
 await app.register(pluginRoutes,     { prefix: '/api/v1/plugins' })
+await app.register(searchRoutes,     { prefix: '/api/v1/search' })
+await app.register(peopleRoutes,     { prefix: '/api/v1/people' })
 
 app.get('/api/health', async () => ({ status: 'ok' }))
 
