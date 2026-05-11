@@ -194,7 +194,6 @@ const SELECT_KEYS = new Set([
   'auth.default_role',
   'transcoding.default_codec',
   'transcoding.default_resolution',
-  'transcoding.hardware_accel',
 ])
 
 function getOptions(key) {
@@ -202,12 +201,6 @@ function getOptions(key) {
     case 'auth.default_role':           return [{ value: 'viewer', label: 'Viewer' }, { value: 'admin', label: 'Admin' }]
     case 'transcoding.default_codec':   return [{ value: 'h264', label: 'H.264 (broad compatibility)' }, { value: 'h265', label: 'H.265 (smaller files)' }]
     case 'transcoding.default_resolution': return ['4k', '1080p', '720p', '480p', '360p'].map(v => ({ value: v, label: v }))
-    case 'transcoding.hardware_accel':  return [
-      { value: 'none',  label: 'None (software)' },
-      { value: 'nvenc', label: 'NVENC (NVIDIA)' },
-      { value: 'vaapi', label: 'VAAPI (Intel/AMD)' },
-      { value: 'qsv',   label: 'QuickSync (Intel)' },
-    ]
     default: return []
   }
 }
