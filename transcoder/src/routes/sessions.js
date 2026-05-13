@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { createReadStream, existsSync } from 'fs'
 import { join } from 'path'
 import { sessionStore } from '../services/sessionStore.js'
-import { startTranscodeSession, stopSession } from '../services/transcoder.js'
+import { startTranscodeSession, stopSession, touchSession } from '../services/transcoder.js'
 
 export default async function sessionRoutes(app) {
   // Create a new transcode session
@@ -35,6 +35,9 @@ export default async function sessionRoutes(app) {
       return reply.code(500).send({ error: 'Transcode process failed' })
     }
 
+    // Touch — keeps the idle janitor from reaping this session
+    touchSession(request.params.id)
+
     const playlistPath = join(s.outputDir, 'playlist.m3u8')
     if (!existsSync(playlistPath)) {
       return reply.code(202).send({ error: 'Playlist not ready yet' })
@@ -49,6 +52,8 @@ export default async function sessionRoutes(app) {
     const s = sessionStore.get(request.params.id)
     if (!s) return reply.code(404).send({ error: 'Session not found' })
 
+    touchSession(request.params.id)
+
     const segmentPath = join(s.outputDir, request.params.segment)
     if (!existsSync(segmentPath)) {
       return reply.code(404).send({ error: 'Segment not found' })
@@ -60,7 +65,7 @@ export default async function sessionRoutes(app) {
 
   // Terminate session + clean up
   app.delete('/:id', async (request, reply) => {
-    stopSession(request.params.id)
+    stopSession(request.params.id, 'client requested DELETE')
     return reply.code(204).send()
   })
 }

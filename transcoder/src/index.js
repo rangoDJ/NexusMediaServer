@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import axios from 'axios'
 import sessionRoutes from './routes/sessions.js'
 import probeRoutes from './routes/probe.js'
+import { startIdleJanitor, stopIdleJanitor, stopAllSessions } from './services/transcoder.js'
 
 const app = Fastify({ logger: true })
 
@@ -27,6 +28,20 @@ app.get('/health', async () => {
 
 const port = parseInt(process.env.PORT ?? '3001')
 await app.listen({ port, host: '0.0.0.0' })
+
+// Reap sessions whose API hasn't polled in 60s (lost DELETEs, crashed clients)
+startIdleJanitor()
+
+// Stop ffmpegs cleanly on container shutdown so the GPU isn't left busy
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, async () => {
+    app.log.info(`Received ${sig}, stopping all sessions`)
+    stopIdleJanitor()
+    stopAllSessions(sig)
+    try { await app.close() } catch {}
+    process.exit(0)
+  })
+}
 
 // Register with the API so it can be picked up for sessions automatically.
 // Retries until the API is reachable (handles startup ordering).
