@@ -98,7 +98,7 @@ export default async function streamRoutes(app) {
 
     // Poll until ffmpeg has generated at least one segment (transcoder returns 202 while not ready)
     let playlist
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 40; attempt++) {
       let resp
       try {
         resp = await axios.get(
@@ -118,7 +118,7 @@ export default async function streamRoutes(app) {
       if (resp.status === 200) { playlist = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
     }
-    if (!playlist) return reply.code(504).send({ error: 'Playlist not ready after 10s' })
+    if (!playlist) return reply.code(504).send({ error: 'Playlist not ready after 20s' })
 
     // Rewrite bare segment filenames to our proxy path
     const rewritten = playlist.replace(
@@ -143,7 +143,7 @@ export default async function streamRoutes(app) {
 
     // Same readiness poll as single-variant
     let master
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 40; attempt++) {
       let resp
       try {
         resp = await axios.get(
@@ -160,7 +160,7 @@ export default async function streamRoutes(app) {
       if (resp.status === 200) { master = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
     }
-    if (!master) return reply.code(504).send({ error: 'Master playlist not ready after 10s' })
+    if (!master) return reply.code(504).send({ error: 'Master playlist not ready after 20s' })
 
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return master

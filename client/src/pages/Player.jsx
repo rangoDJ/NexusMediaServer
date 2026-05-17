@@ -58,6 +58,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
     async function start() {
       setSrc(null)
+      setError(null)  // clear any previous player error before restarting
       try {
         // Resume position: in-stream switch overrides saved progress
         let savedPos = 0
@@ -109,7 +110,12 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         setMode(data.abr ? 'abr' : 'transcode')
         setSessionId(data.session_id)
         if (savedPos > 5) setSeekTo(savedPos)
-        setSrc({ src: data.playlist_url, type: 'application/x-mpegurl' })
+        // Embed the JWT as ?token= so the very first manifest request is
+        // authenticated. hls.js races the xhrSetup callback on its initial
+        // fetch, causing a 401 if only the Authorization header approach is used.
+        const hlsToken = localStorage.getItem('nexus_token')
+        const hlsUrl   = `${data.playlist_url}?token=${encodeURIComponent(hlsToken)}`
+        setSrc({ src: hlsUrl, type: 'application/x-mpegurl' })
       } catch (e) {
         if (!cancelled) setError(e.response?.data?.error ?? e.message)
       }
@@ -198,6 +204,13 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     }
   }
 
+  // Surface hls.js / native player errors as a visible message instead of
+  // leaving the user with an infinite spinning circle.
+  function handlePlayerError(event) {
+    const msg = event.detail?.message ?? 'stream failed to load'
+    setError(msg)
+  }
+
   function handleEnded() {
     const player = playerRef.current
     const dur = Math.floor(player?.duration ?? 0)
@@ -270,6 +283,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           onCanPlay={onCanPlay}
           onTimeUpdate={onTimeUpdate}
           onEnded={handleEnded}
+          onError={handlePlayerError}
           style={{ width: '100%', height: '100%', backgroundColor: '#000' }}
         >
           <MediaProvider>
