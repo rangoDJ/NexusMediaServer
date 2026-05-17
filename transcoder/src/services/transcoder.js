@@ -7,7 +7,11 @@ import { sessionStore } from './sessionStore.js'
 const HLS_BASE = process.env.HLS_OUTPUT_PATH ?? '/tmp/hls'
 const HW_ACCEL = (process.env.HW_ACCEL ?? '').trim() || 'cpu'
 
-const HW_WATCHDOG_SECS = 15
+// How long to wait for the HW encoder to produce its first output file before
+// giving up and retrying with CPU. Shorter than the API's 30s polling window
+// so the CPU fallback has time to produce output before the client times out.
+// Normal VAAPI/NVENC init takes <2s, so 8s is still very conservative.
+const HW_WATCHDOG_SECS = 8
 const IDLE_TIMEOUT_SECS = 60
 
 // How long to wait for ffmpeg to exit after SIGTERM before escalating to SIGKILL.

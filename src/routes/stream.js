@@ -96,9 +96,10 @@ export default async function streamRoutes(app) {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
     if (!session) return
 
-    // Poll until ffmpeg has generated at least one segment (transcoder returns 202 while not ready)
+    // Poll until ffmpeg has generated at least one segment (transcoder returns 202 while not ready).
+    // 60 × 500ms = 30s window: HW watchdog fires at 8s, CPU fallback needs ~2-5s → safely within 30s.
     let playlist
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 60; attempt++) {
       let resp
       try {
         resp = await axios.get(
@@ -118,7 +119,7 @@ export default async function streamRoutes(app) {
       if (resp.status === 200) { playlist = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
     }
-    if (!playlist) return reply.code(504).send({ error: 'Playlist not ready after 20s' })
+    if (!playlist) return reply.code(504).send({ error: 'Playlist not ready after 30s' })
 
     // Rewrite bare segment filenames to our proxy path
     const rewritten = playlist.replace(
@@ -141,9 +142,9 @@ export default async function streamRoutes(app) {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
     if (!session) return
 
-    // Same readiness poll as single-variant
+    // Same readiness poll as single-variant — 60 × 500ms = 30s
     let master
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 60; attempt++) {
       let resp
       try {
         resp = await axios.get(
@@ -160,7 +161,7 @@ export default async function streamRoutes(app) {
       if (resp.status === 200) { master = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
     }
-    if (!master) return reply.code(504).send({ error: 'Master playlist not ready after 20s' })
+    if (!master) return reply.code(504).send({ error: 'Master playlist not ready after 30s' })
 
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return master
