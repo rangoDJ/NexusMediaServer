@@ -3,6 +3,7 @@ import { createReadStream } from 'fs'
 import { stat } from 'fs/promises'
 import { pickTranscoder, claimSession, releaseSession } from '../services/transcoderPool.js'
 import { callHook } from '../services/pluginLoader.js'
+import { requireAdmin } from '../middleware/auth.js'
 
 // Containers whose raw bytes a typical browser can play without transcoding.
 // Used for the Content-Type on direct-play responses; the eligibility check
@@ -249,6 +250,82 @@ export default async function streamRoutes(app) {
     return reply.send(createReadStream(row.file_path))
   })
 
+  // Admin stats — active and recent transcode sessions with user/media context.
+  // Gated behind admin role so ordinary viewers can't see other users' activity.
+  app.get('/stats', { preHandler: [requireAdmin] }, async (request) => {
+    // Active sessions with user, media title, and node info
+    const { rows: activeSessions } = await app.db.query(`
+      SELECT
+        s.id,
+        s.codec,
+        s.resolution,
+        s.bitrate,
+        s.created_at,
+        EXTRACT(EPOCH FROM (now() - s.created_at))::int AS duration_secs,
+        u.username,
+        COALESCE(
+          m.title,
+          series.title || ' · S' || LPAD(ep.season_number::text, 2, '0')
+                       || 'E' || LPAD(ep.episode_number::text, 2, '0')
+        ) AS title,
+        n.name  AS node_name,
+        n.hw_accel
+      FROM transcode_sessions s
+      JOIN users u                ON u.id = s.user_id
+      LEFT JOIN media_items m     ON m.id = s.media_item_id
+      LEFT JOIN episodes ep       ON ep.id = s.episode_id
+      LEFT JOIN media_items series ON series.id = ep.series_id
+      JOIN transcoder_nodes n     ON n.id = s.transcoder_node_id
+      WHERE s.status = 'active'
+      ORDER BY s.created_at DESC
+    `)
+
+    // Last 30 completed/errored sessions
+    const { rows: recentSessions } = await app.db.query(`
+      SELECT
+        s.id,
+        s.codec,
+        s.resolution,
+        s.bitrate,
+        s.status,
+        s.created_at,
+        s.ended_at,
+        EXTRACT(EPOCH FROM (COALESCE(s.ended_at, now()) - s.created_at))::int AS duration_secs,
+        u.username,
+        COALESCE(
+          m.title,
+          series.title || ' · S' || LPAD(ep.season_number::text, 2, '0')
+                       || 'E' || LPAD(ep.episode_number::text, 2, '0')
+        ) AS title,
+        n.name  AS node_name,
+        n.hw_accel
+      FROM transcode_sessions s
+      JOIN users u                ON u.id = s.user_id
+      LEFT JOIN media_items m     ON m.id = s.media_item_id
+      LEFT JOIN episodes ep       ON ep.id = s.episode_id
+      LEFT JOIN media_items series ON series.id = ep.series_id
+      LEFT JOIN transcoder_nodes n ON n.id = s.transcoder_node_id
+      WHERE s.status IN ('done', 'error')
+      ORDER BY s.created_at DESC
+      LIMIT 30
+    `)
+
+    // Summary counts
+    const { rows: counts } = await app.db.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'active')                                    AS active,
+        COUNT(*) FILTER (WHERE created_at >= now() - interval '24 hours')            AS today,
+        COUNT(*)                                                                      AS all_time
+      FROM transcode_sessions
+    `)
+
+    return {
+      active_sessions: activeSessions,
+      recent_sessions: recentSessions,
+      totals: counts[0],
+    }
+  })
+
   // Stop a session — clean up on both sides
   app.delete('/:sessionId', async (request, reply) => {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
@@ -260,7 +337,7 @@ export default async function streamRoutes(app) {
     ).catch(() => {}) // best-effort; transcoder may already be gone
 
     await app.db.query(
-      "UPDATE transcode_sessions SET status='done' WHERE id=$1",
+      "UPDATE transcode_sessions SET status='done', ended_at=now() WHERE id=$1",
       [request.params.sessionId]
     )
     await releaseSession(app.db, session.transcoder_node_id)

@@ -9,6 +9,7 @@ const TABS = [
   { id: 'library',     label: 'Libraries' },
   { id: 'transcoding', label: 'Transcoding' },
   { id: 'transcoders', label: 'Transcoder Nodes' },
+  { id: 'stats',       label: 'Playback Stats' },
   { id: 'plugins',     label: 'Plugins' },
   { id: 'users',       label: 'Users' },
   { id: 'sessions',    label: 'My Sessions' },
@@ -96,6 +97,7 @@ export default function Settings() {
           {activeTab === 'library'     && <LibraryTab     rows={settings.library ?? []}     save={save} />}
           {activeTab === 'transcoding' && <TranscodingTab rows={settings.transcoding ?? []} save={save} />}
           {activeTab === 'transcoders' && <TranscoderNodes />}
+          {activeTab === 'stats'       && <StatsTab />}
           {activeTab === 'plugins'     && <PluginsTab />}
           {activeTab === 'users'       && <UsersTab />}
           {activeTab === 'sessions'    && <SessionsTab />}
@@ -768,6 +770,211 @@ function PluginSettingsForm({ plugin, onSave, saving }) {
         </button>
       </div>
     </form>
+  )
+}
+
+// ─── Playback stats ──────────────────────────────────────────────────────────
+
+function formatDuration(secs) {
+  if (!secs || secs < 0) return '—'
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+function formatBitrate(kbps) {
+  if (!kbps) return '—'
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`
+}
+
+function timeAgo(ts) {
+  if (!ts) return '—'
+  const diff = Math.floor((Date.now() - new Date(ts)) / 1000)
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return new Date(ts).toLocaleDateString()
+}
+
+function StreamModeBadge({ hw }) {
+  const colors = { nvenc: '#76b900', vaapi: '#0071c5', qsv: '#0071c5', cpu: '#888' }
+  const labels = { nvenc: 'NVENC', vaapi: 'VAAPI', qsv: 'QSV', cpu: 'CPU' }
+  const color  = colors[hw] ?? '#888'
+  const label  = labels[hw]  ?? (hw ?? 'CPU').toUpperCase()
+  return (
+    <span style={{
+      background: color + '22', border: `1px solid ${color}`,
+      borderRadius: 4, padding: '1px 6px', fontSize: 11,
+      color, fontWeight: 600, whiteSpace: 'nowrap',
+    }}>
+      {label}
+    </span>
+  )
+}
+
+function StatsTab() {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  async function load() {
+    try {
+      const { data: d } = await api.get('/stream/stats')
+      setData(d)
+      setError(null)
+    } catch (e) {
+      setError(e.response?.data?.error ?? e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Initial load + auto-refresh every 10 s while the tab is open
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 10_000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (loading) return <div className={styles.loading}>Loading stats…</div>
+  if (error)   return <div className={styles.inlineError}>Failed to load stats: {error}</div>
+
+  const { active_sessions, recent_sessions, totals } = data
+
+  return (
+    <div className={styles.sectionWide}>
+      {/* ── Summary tiles ─────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24 }}>
+        <StatsTile label="Active streams"  value={totals.active}   accent="#7c6af7" />
+        <StatsTile label="Sessions today"  value={totals.today}    accent="#4caf7d" />
+        <StatsTile label="All-time sessions" value={totals.all_time} accent="#888" />
+      </div>
+
+      {/* ── Active sessions ───────────────────────────────────────────── */}
+      <h3 className={styles.subheading}>
+        Active streams
+        {active_sessions.length > 0 && (
+          <span style={{ marginLeft: 8, ...badge('#4caf7d') }}>
+            {active_sessions.length} live
+          </span>
+        )}
+      </h3>
+
+      {active_sessions.length === 0 ? (
+        <p className={styles.empty}>No active streams right now.</p>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Title</th>
+                <th>Codec</th>
+                <th>Resolution</th>
+                <th>Bitrate</th>
+                <th>Node</th>
+                <th>Running</th>
+              </tr>
+            </thead>
+            <tbody>
+              {active_sessions.map(s => (
+                <tr key={s.id}>
+                  <td>{s.username}</td>
+                  <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.title ?? '—'}
+                  </td>
+                  <td style={{ textTransform: 'uppercase', fontSize: 12 }}>{s.codec}</td>
+                  <td style={{ fontSize: 12 }}>{s.resolution ?? '—'}</td>
+                  <td style={{ fontSize: 12 }}>{formatBitrate(s.bitrate)}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <StreamModeBadge hw={s.hw_accel} />
+                      <span className={styles.muted} style={{ fontSize: 12 }}>{s.node_name}</span>
+                    </div>
+                  </td>
+                  <td className={styles.muted} style={{ fontSize: 12 }}>
+                    {formatDuration(s.duration_secs)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── Recent history ────────────────────────────────────────────── */}
+      <h3 className={styles.subheading} style={{ marginTop: 32 }}>Recent playback history</h3>
+
+      {recent_sessions.length === 0 ? (
+        <p className={styles.empty}>No completed sessions yet.</p>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Title</th>
+                <th>Codec</th>
+                <th>Resolution</th>
+                <th>Bitrate</th>
+                <th>Node</th>
+                <th>Duration</th>
+                <th>Started</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent_sessions.map(s => (
+                <tr key={s.id}>
+                  <td>{s.username}</td>
+                  <td style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.title ?? '—'}
+                  </td>
+                  <td style={{ textTransform: 'uppercase', fontSize: 12 }}>{s.codec}</td>
+                  <td style={{ fontSize: 12 }}>{s.resolution ?? '—'}</td>
+                  <td style={{ fontSize: 12 }}>{formatBitrate(s.bitrate)}</td>
+                  <td>
+                    {s.hw_accel
+                      ? <StreamModeBadge hw={s.hw_accel} />
+                      : <span className={styles.muted}>—</span>}
+                  </td>
+                  <td className={styles.muted} style={{ fontSize: 12 }}>
+                    {formatDuration(s.duration_secs)}
+                  </td>
+                  <td className={styles.muted} style={{ fontSize: 12 }}>
+                    {timeAgo(s.created_at)}
+                  </td>
+                  <td>
+                    <span style={badge(s.status === 'error' ? '#e05555' : '#4caf7d')}>
+                      {s.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StatsTile({ label, value, accent }) {
+  return (
+    <div style={{
+      background: 'var(--surface)',
+      border: `1px solid ${accent}44`,
+      borderRadius: 10,
+      padding: '16px 24px',
+      minWidth: 140,
+      textAlign: 'center',
+    }}>
+      <div style={{ fontSize: 32, fontWeight: 700, color: accent, lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{label}</div>
+    </div>
   )
 }
 
