@@ -7,60 +7,48 @@ import { startTranscodeSession, stopSession, touchSession } from '../services/tr
 export default async function sessionRoutes(app) {
   // Create a new transcode session
   app.post('/', async (request, reply) => {
-    const { file_path, codec, resolution, bitrate } = request.body
+    const { file_path, codec, resolution, bitrate, variants } = request.body
 
     if (!existsSync(file_path)) {
       return reply.code(404).send({ error: 'File not found on transcoder' })
     }
 
     const session_id = uuidv4()
-    await startTranscodeSession({ session_id, file_path, codec, resolution, bitrate })
+    await startTranscodeSession({ session_id, file_path, codec, resolution, bitrate, variants })
 
-    return reply.code(201).send({ session_id })
+    return reply.code(201).send({ session_id, abr: !!variants })
   })
 
-  // Get session status
+  // Session status
   app.get('/:id/status', async (request, reply) => {
     const s = sessionStore.get(request.params.id)
     if (!s) return reply.code(404).send({ error: 'Session not found' })
-    return { session_id: request.params.id, status: s.status }
+    return { session_id: request.params.id, status: s.status, abr: !!s.abr }
   })
 
-  // Serve HLS playlist
+  // Single-variant playlist (non-ABR sessions)
   app.get('/:id/playlist.m3u8', async (request, reply) => {
-    const s = sessionStore.get(request.params.id)
-    if (!s) return reply.code(404).send({ error: 'Session not found' })
-
-    if (s.status === 'error') {
-      return reply.code(500).send({ error: 'Transcode process failed' })
-    }
-
-    // Touch — keeps the idle janitor from reaping this session
-    touchSession(request.params.id)
-
-    const playlistPath = join(s.outputDir, 'playlist.m3u8')
-    if (!existsSync(playlistPath)) {
-      return reply.code(202).send({ error: 'Playlist not ready yet' })
-    }
-
-    reply.header('Content-Type', 'application/vnd.apple.mpegurl')
-    return reply.send(createReadStream(playlistPath))
+    return servePlaylist(request, reply, ['playlist.m3u8'])
   })
 
-  // Serve a segment
+  // ABR master playlist
+  app.get('/:id/master.m3u8', async (request, reply) => {
+    return servePlaylist(request, reply, ['master.m3u8'])
+  })
+
+  // ABR variant playlist: /:id/v0/playlist.m3u8
+  app.get('/:id/:variant/playlist.m3u8', async (request, reply) => {
+    return servePlaylist(request, reply, [request.params.variant, 'playlist.m3u8'])
+  })
+
+  // ABR variant segment: /:id/v0/segment_00001.ts
+  app.get('/:id/:variant/:segment', async (request, reply) => {
+    return serveSegment(request, reply, [request.params.variant, request.params.segment])
+  })
+
+  // Single-variant segment
   app.get('/:id/:segment', async (request, reply) => {
-    const s = sessionStore.get(request.params.id)
-    if (!s) return reply.code(404).send({ error: 'Session not found' })
-
-    touchSession(request.params.id)
-
-    const segmentPath = join(s.outputDir, request.params.segment)
-    if (!existsSync(segmentPath)) {
-      return reply.code(404).send({ error: 'Segment not found' })
-    }
-
-    reply.header('Content-Type', 'video/MP2T')
-    return reply.send(createReadStream(segmentPath))
+    return serveSegment(request, reply, [request.params.segment])
   })
 
   // Terminate session + clean up
@@ -68,4 +56,32 @@ export default async function sessionRoutes(app) {
     stopSession(request.params.id, 'client requested DELETE')
     return reply.code(204).send()
   })
+}
+
+function servePlaylist(request, reply, pathParts) {
+  const s = sessionStore.get(request.params.id)
+  if (!s) return reply.code(404).send({ error: 'Session not found' })
+  if (s.status === 'error') return reply.code(500).send({ error: 'Transcode process failed' })
+
+  touchSession(request.params.id)
+
+  const fullPath = join(s.outputDir, ...pathParts)
+  if (!existsSync(fullPath)) {
+    return reply.code(202).send({ error: 'Playlist not ready yet' })
+  }
+  reply.header('Content-Type', 'application/vnd.apple.mpegurl')
+  return reply.send(createReadStream(fullPath))
+}
+
+function serveSegment(request, reply, pathParts) {
+  const s = sessionStore.get(request.params.id)
+  if (!s) return reply.code(404).send({ error: 'Session not found' })
+
+  touchSession(request.params.id)
+
+  const fullPath = join(s.outputDir, ...pathParts)
+  if (!existsSync(fullPath)) return reply.code(404).send({ error: 'Segment not found' })
+
+  reply.header('Content-Type', 'video/MP2T')
+  return reply.send(createReadStream(fullPath))
 }

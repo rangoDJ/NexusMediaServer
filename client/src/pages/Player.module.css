@@ -26,6 +26,9 @@
 }
 
 .qualityBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -38,6 +41,17 @@
   border-radius: 16px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
+}
+
+.modePill {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.9);
+  padding: 1px 6px;
+  border-radius: 8px;
 }
 .qualityBtn:hover {
   background: rgba(0, 0, 0, 0.8);

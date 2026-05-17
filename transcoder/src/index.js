@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import axios from 'axios'
 import sessionRoutes from './routes/sessions.js'
 import probeRoutes from './routes/probe.js'
+import subtitleRoutes from './routes/subtitles.js'
 import { startIdleJanitor, stopIdleJanitor, stopAllSessions } from './services/transcoder.js'
 
 const app = Fastify({ logger: true })
@@ -15,6 +16,7 @@ app.addHook('onRequest', async (request, reply) => {
 
 await app.register(sessionRoutes, { prefix: '/session' })
 await app.register(probeRoutes, { prefix: '/probe' })
+await app.register(subtitleRoutes, { prefix: '/subtitle' })
 
 app.get('/health', async () => {
   const { sessionStore } = await import('./services/sessionStore.js')

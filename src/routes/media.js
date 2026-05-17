@@ -1,10 +1,20 @@
+import axios from 'axios'
+import { pickTranscoder } from '../services/transcoderPool.js'
+
 // Codecs natively supported for direct play in common mobile/browser environments.
 // Mobile apps pass their own list via ?client_codecs= to get an accurate answer.
 const DEFAULT_DIRECT_PLAY_CODECS = new Set(['h264', 'aac', 'mp3', 'vp8', 'vp9'])
 const DEFAULT_DIRECT_PLAY_CONTAINERS = new Set(['mp4', 'webm', 'm4v'])
 
 export default async function mediaRoutes(app) {
-  app.addHook('preHandler', app.authenticate)
+  // Subtitle .vtt URLs are loaded by the <track> element which can't set
+  // Authorization headers — accept the JWT as ?token= as a fallback.
+  app.addHook('preHandler', async (request, reply) => {
+    if (request.query.token && !request.headers.authorization) {
+      request.headers.authorization = `Bearer ${request.query.token}`
+    }
+    return app.authenticate(request, reply)
+  })
 
   // List media (paginated). Supports filtering and sorting for the home page rows.
   // sort = alphabetical | recently_added | random | year_desc | rating
@@ -153,15 +163,44 @@ export default async function mediaRoutes(app) {
         file_size:     item.file_size,
       },
       playback: {
-        direct_play:          canDirectPlay,
-        direct_play_reasons:  reasons,
-        stream_endpoint:      '/api/v1/stream/start',
-        recommended_params:   canDirectPlay ? null : {
+        direct_play:         canDirectPlay,
+        direct_play_reasons: reasons,
+        // Pre-built path the web client can drop into a <video src=...>
+        // (it appends ?token= itself).
+        direct_play_url: canDirectPlay
+          ? (item.series_id
+              ? `/api/v1/stream/direct?episode_id=${item.id}`
+              : `/api/v1/stream/direct?media_item_id=${item.id}`)
+          : null,
+        stream_endpoint:    '/api/v1/stream/start',
+        recommended_params: canDirectPlay ? null : {
           codec:      recommendedCodec,
           resolution: recommendedResolution,
         },
       },
+      // Embedded text subtitle tracks the Player can request as WebVTT.
+      // Populated during scan (see scanner.js → metadata.subtitle_streams).
+      subtitle_tracks: ((item.metadata?.subtitle_streams) ?? []).map(s => ({
+        stream_index: s.index,
+        language:     s.language,
+        title:        s.title,
+        codec:        s.codec,
+        forced:       s.forced ?? false,
+        default:      s.default ?? false,
+        url: item.series_id
+          ? `/api/v1/media/episode/${item.id}/subtitle/${s.index}.vtt`
+          : `/api/v1/media/${item.id}/subtitle/${s.index}.vtt`,
+      })),
     }
+  })
+
+  // Proxy a single subtitle track from the file as WebVTT. Goes through a
+  // transcoder node (the API container has no ffmpeg).
+  app.get('/:id/subtitle/:idx.vtt', async (request, reply) => {
+    return proxySubtitle(app, request, reply, { isEpisode: false })
+  })
+  app.get('/episode/:id/subtitle/:idx.vtt', async (request, reply) => {
+    return proxySubtitle(app, request, reply, { isEpisode: true })
   })
 
   // Watch progress
@@ -205,4 +244,46 @@ export default async function mediaRoutes(app) {
     `, [request.user.sub, request.params.episodeId, position_secs, duration_secs, completed ?? false])
     return reply.code(204).send()
   })
+}
+
+// Proxy a single subtitle track from a transcoder node back to the client
+// as WebVTT. The .idx URL param is the ffmpeg stream index from probe.
+async function proxySubtitle(app, request, reply, { isEpisode }) {
+  const idx = parseInt(request.params.idx, 10)
+  if (Number.isNaN(idx)) return reply.code(400).send({ error: 'Bad subtitle index' })
+
+  let filePath
+  if (isEpisode) {
+    const { rows } = await app.db.query('SELECT file_path FROM episodes WHERE id=$1', [request.params.id])
+    if (!rows.length) return reply.code(404).send({ error: 'Episode not found' })
+    filePath = rows[0].file_path
+  } else {
+    const { rows } = await app.db.query('SELECT file_path FROM media_items WHERE id=$1', [request.params.id])
+    if (!rows.length) return reply.code(404).send({ error: 'Media not found' })
+    filePath = rows[0].file_path
+  }
+  if (!filePath) return reply.code(404).send({ error: 'No file' })
+
+  const node = await pickTranscoder(app.db)
+  if (!node) return reply.code(503).send({ error: 'No transcoder available for subtitle extraction' })
+
+  try {
+    const resp = await axios.post(
+      `${node.url}/subtitle`,
+      { file_path: filePath, stream_index: idx },
+      {
+        headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+        responseType: 'arraybuffer',
+        timeout: 60_000,
+      }
+    )
+    reply.headers({
+      'Content-Type':  'text/vtt; charset=utf-8',
+      'Cache-Control': 'private, max-age=86400',
+    })
+    return reply.send(Buffer.from(resp.data))
+  } catch (err) {
+    app.log.warn(err, `Subtitle extraction failed (${filePath} idx=${idx})`)
+    return reply.code(502).send({ error: 'Subtitle extraction failed' })
+  }
 }

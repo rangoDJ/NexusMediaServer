@@ -1,6 +1,19 @@
 import axios from 'axios'
+import { createReadStream } from 'fs'
+import { stat } from 'fs/promises'
 import { pickTranscoder, claimSession, releaseSession } from '../services/transcoderPool.js'
 import { callHook } from '../services/pluginLoader.js'
+
+// Containers whose raw bytes a typical browser can play without transcoding.
+// Used for the Content-Type on direct-play responses; the eligibility check
+// (codec+container support) lives in /media/:id/playback-info.
+const MIME_BY_CONTAINER = {
+  mp4:  'video/mp4',
+  m4v:  'video/mp4',
+  webm: 'video/webm',
+  mov:  'video/quicktime',
+  mkv:  'video/x-matroska', // some browsers will reject; playback-info gates this
+}
 
 export default async function streamRoutes(app) {
   // Stream routes accept the JWT either as a Bearer header (hls.js xhrSetup)
@@ -16,13 +29,12 @@ export default async function streamRoutes(app) {
   // and returns an opaque playlist URL. The client never needs to know where the
   // transcoder lives.
   app.post('/start', async (request, reply) => {
-    let { media_item_id, episode_id, codec = 'h264', resolution = '1080p', bitrate } = request.body
+    let { media_item_id, episode_id, codec = 'h264', resolution = '1080p', bitrate, variants = false } = request.body
     const userId = request.user.sub
 
     const filePath = await resolveFilePath(app.db, media_item_id, episode_id, reply)
     if (!filePath) return
 
-    // Allow plugins to inspect or modify transcode parameters before the session starts
     const streamOverrides = await callHook('stream.start', { filePath, codec, resolution, bitrate }, app.log)
     for (const override of streamOverrides) {
       if (override.codec)      codec      = override.codec
@@ -33,14 +45,15 @@ export default async function streamRoutes(app) {
     const node = await pickTranscoder(app.db)
     if (!node) return reply.code(503).send({ error: 'No transcoder nodes available' })
 
-    let remoteSessionId
+    let remoteSessionId, abr
     try {
       const { data } = await axios.post(
         `${node.url}/session`,
-        { file_path: filePath, codec, resolution, bitrate },
+        { file_path: filePath, codec, resolution, bitrate, variants },
         { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 10_000 }
       )
       remoteSessionId = data.session_id
+      abr = data.abr === true
     } catch (err) {
       app.log.error(err, `Failed to start session on transcoder ${node.url}`)
       return reply.code(502).send({ error: 'Transcoder unavailable' })
@@ -59,8 +72,13 @@ export default async function streamRoutes(app) {
 
     const sessionId = rows[0].id
     return {
-      session_id: sessionId,
-      playlist_url: `/api/v1/stream/${sessionId}/playlist.m3u8`
+      session_id:   sessionId,
+      abr,
+      // For ABR sessions the client points hls.js at master.m3u8 and hls.js
+      // handles variant selection. For single-variant it's playlist.m3u8.
+      playlist_url: abr
+        ? `/api/v1/stream/${sessionId}/master.m3u8`
+        : `/api/v1/stream/${sessionId}/playlist.m3u8`,
     }
   })
 
@@ -102,24 +120,133 @@ export default async function streamRoutes(app) {
     return rewritten
   })
 
-  // Proxy an individual HLS segment
+  // Proxy an individual HLS segment (single-variant sessions)
   app.get('/:sessionId/:segment', async (request, reply) => {
+    return proxySegment(app, request, reply, [request.params.segment])
+  })
+
+  // ABR master playlist — pass through, the relative variant paths
+  // (v0/playlist.m3u8, v1/playlist.m3u8) resolve back to this prefix
+  // and hit the variant routes below.
+  app.get('/:sessionId/master.m3u8', async (request, reply) => {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
     if (!session) return
 
-    let data
+    // Same readiness poll as single-variant
+    let master
+    for (let attempt = 0; attempt < 20; attempt++) {
+      let resp
+      try {
+        resp = await axios.get(
+          `${session.node_url}/session/${session.remote_session_id}/master.m3u8`,
+          { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+            responseType: 'text', timeout: 10_000,
+            validateStatus: s => s === 200 || s === 202 }
+        )
+      } catch (err) {
+        const status = err.response?.status
+        if (status === 500) return reply.code(502).send({ error: 'Transcode failed' })
+        return reply.code(502).send({ error: 'Transcoder unreachable' })
+      }
+      if (resp.status === 200) { master = resp.data; break }
+      await new Promise(r => setTimeout(r, 500))
+    }
+    if (!master) return reply.code(504).send({ error: 'Master playlist not ready after 10s' })
+
+    reply.header('Content-Type', 'application/vnd.apple.mpegurl')
+    return master
+  })
+
+  // ABR variant playlist: /:sessionId/v0/playlist.m3u8
+  app.get('/:sessionId/:variant/playlist.m3u8', async (request, reply) => {
+    const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
+    if (!session) return
+
+    let playlist
     try {
-      const res = await axios.get(
-        `${session.node_url}/session/${session.remote_session_id}/${request.params.segment}`,
-        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, responseType: 'arraybuffer', timeout: 15_000 }
+      const resp = await axios.get(
+        `${session.node_url}/session/${session.remote_session_id}/${request.params.variant}/playlist.m3u8`,
+        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+          responseType: 'text', timeout: 10_000 }
       )
-      data = res.data
+      playlist = resp.data
     } catch {
-      return reply.code(502).send({ error: 'Segment unavailable' })
+      return reply.code(502).send({ error: 'Variant playlist unreachable' })
+    }
+    reply.header('Content-Type', 'application/vnd.apple.mpegurl')
+    return playlist
+  })
+
+  // ABR variant segment: /:sessionId/v0/segment_00001.ts
+  app.get('/:sessionId/:variant/:segment', async (request, reply) => {
+    return proxySegment(app, request, reply, [request.params.variant, request.params.segment])
+  })
+
+  // Direct play — serve the raw file with HTTP byte-range support so browsers
+  // can scrub without any transcoding. The Player only points here when
+  // /media/:id/playback-info reports direct_play=true.
+  //
+  // Query params:
+  //   media_item_id | episode_id  — exactly one
+  //   token                       — JWT (handled by the preHandler above)
+  app.get('/direct', async (request, reply) => {
+    const { media_item_id, episode_id } = request.query
+
+    let row
+    if (episode_id) {
+      const { rows } = await app.db.query(
+        'SELECT file_path, container FROM episodes WHERE id=$1', [episode_id]
+      )
+      if (!rows.length) return reply.code(404).send({ error: 'Episode not found' })
+      row = rows[0]
+    } else if (media_item_id) {
+      const { rows } = await app.db.query(
+        'SELECT file_path, container FROM media_items WHERE id=$1', [media_item_id]
+      )
+      if (!rows.length) return reply.code(404).send({ error: 'Media not found' })
+      row = rows[0]
+    } else {
+      return reply.code(400).send({ error: 'media_item_id or episode_id required' })
+    }
+    if (!row.file_path) return reply.code(404).send({ error: 'Item has no file' })
+
+    let st
+    try { st = await stat(row.file_path) }
+    catch { return reply.code(404).send({ error: 'File missing on disk' }) }
+
+    const contentType = MIME_BY_CONTAINER[row.container?.toLowerCase()] ?? 'application/octet-stream'
+    const range = request.headers.range
+
+    if (range) {
+      const m = /^bytes=(\d+)-(\d*)$/.exec(range)
+      if (!m) {
+        reply.header('Content-Range', `bytes */${st.size}`)
+        return reply.code(416).send({ error: 'Malformed range' })
+      }
+      const start = parseInt(m[1], 10)
+      const end   = m[2] ? parseInt(m[2], 10) : st.size - 1
+      if (start >= st.size || end >= st.size || start > end) {
+        reply.header('Content-Range', `bytes */${st.size}`)
+        return reply.code(416).send({ error: 'Range not satisfiable' })
+      }
+      reply.code(206)
+      reply.headers({
+        'Content-Type':  contentType,
+        'Content-Length': end - start + 1,
+        'Content-Range': `bytes ${start}-${end}/${st.size}`,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'private, max-age=0',
+      })
+      return reply.send(createReadStream(row.file_path, { start, end }))
     }
 
-    reply.header('Content-Type', 'video/MP2T')
-    return Buffer.from(data)
+    reply.headers({
+      'Content-Type':   contentType,
+      'Content-Length': st.size,
+      'Accept-Ranges':  'bytes',
+      'Cache-Control':  'private, max-age=0',
+    })
+    return reply.send(createReadStream(row.file_path))
   })
 
   // Stop a session — clean up on both sides
@@ -155,6 +282,22 @@ async function resolveFilePath(db, mediaItemId, episodeId, reply) {
   }
   reply.code(400).send({ error: 'media_item_id or episode_id required' })
   return null
+}
+
+async function proxySegment(app, request, reply, pathParts) {
+  const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
+  if (!session) return
+  try {
+    const res = await axios.get(
+      `${session.node_url}/session/${session.remote_session_id}/${pathParts.join('/')}`,
+      { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+        responseType: 'arraybuffer', timeout: 15_000 }
+    )
+    reply.header('Content-Type', 'video/MP2T')
+    return Buffer.from(res.data)
+  } catch {
+    return reply.code(502).send({ error: 'Segment unavailable' })
+  }
 }
 
 async function getActiveSession(db, sessionId, userId, reply) {

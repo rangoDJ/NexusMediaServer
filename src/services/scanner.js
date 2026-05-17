@@ -150,6 +150,9 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
   const pluginResults = await callHook('metadata.movie', { title, year, tmdbMeta, nfo }, log)
   let merged = tmdbOpts.nfoPriority ? { ...tmdbMeta, ...nfo } : { ...nfo, ...tmdbMeta }
   for (const result of pluginResults) merged = { ...merged, ...result }
+  // Persist embedded subtitle stream info from probe so the player can list
+  // tracks without re-probing every playback.
+  if (fileInfo?.subtitle_streams) merged.subtitle_streams = fileInfo.subtitle_streams
 
   const { rows } = await db.query(`
     INSERT INTO media_items(
@@ -304,12 +307,18 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
           log.warn(`[scan] Probe failed for ${epFile}: ${err.message}`)
         }
 
+        const epMetadata = {
+          ...epNfo,
+          ...(fileInfo?.subtitle_streams ? { subtitle_streams: fileInfo.subtitle_streams } : {}),
+        }
+
         await db.query(`
           INSERT INTO episodes(
             series_id, season_number, episode_number, title, plot, file_path, nfo_path,
-            duration_secs, video_codec, audio_codec, container, file_size, width, height, bitrate_kbps
+            duration_secs, video_codec, audio_codec, container, file_size, width, height, bitrate_kbps,
+            metadata
           )
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
           ON CONFLICT DO NOTHING
         `, [
           seriesId, seasonNumber, episodeNumber,
@@ -318,6 +327,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
           fileInfo?.audio?.codec ?? null, fileInfo?.container ?? null,
           fileInfo?.file_size ?? null, fileInfo?.video?.width ?? null,
           fileInfo?.video?.height ?? null, fileInfo?.bitrate_kbps ?? null,
+          JSON.stringify(epMetadata),
         ])
       }
     }
