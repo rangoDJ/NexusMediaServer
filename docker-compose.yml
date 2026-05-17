@@ -73,6 +73,10 @@ services:
     depends_on:
       - nexusmediaserver
     restart: unless-stopped
+    # Give the transcoder enough time to drain ffmpeg sessions before Docker
+    # force-kills the container. The shutdown handler awaits every ffmpeg exit
+    # so GPU hardware contexts (VAAPI / QSV) are properly released.
+    stop_grace_period: 30s
 
   # ── NVIDIA GPU transcoder (NVENC) ─────────────────────────────────────────────
   # Requirements:
@@ -109,6 +113,7 @@ services:
   #   depends_on:
   #     - nexusmediaserver
   #   restart: unless-stopped
+  #   stop_grace_period: 30s   # waits for ffmpeg to release NVENC context cleanly
 
   # ── Intel GPU transcoder (VAAPI / QuickSync) ──────────────────────────────────
   # Requirements:
@@ -137,6 +142,8 @@ services:
   #   depends_on:
   #     - nexusmediaserver
   #   restart: unless-stopped
+  #   # IMPORTANT: must be long enough for ffmpeg to release VAAPI/QSV contexts
+  #   stop_grace_period: 30s
 
   # ── Database — choose ONE of the two options below ───────────────────────────
   #

@@ -3,7 +3,7 @@ import axios from 'axios'
 import sessionRoutes from './routes/sessions.js'
 import probeRoutes from './routes/probe.js'
 import subtitleRoutes from './routes/subtitles.js'
-import { startIdleJanitor, stopIdleJanitor, stopAllSessions } from './services/transcoder.js'
+import { startIdleJanitor, stopIdleJanitor, stopAllSessionsGracefully } from './services/transcoder.js'
 
 const app = Fastify({ logger: true })
 
@@ -41,12 +41,24 @@ await app.listen({ port, host: '0.0.0.0' })
 // Reap sessions whose API hasn't polled in 60s (lost DELETEs, crashed clients)
 startIdleJanitor()
 
-// Stop ffmpegs cleanly on container shutdown so the GPU isn't left busy
+// Graceful shutdown — MUST await every ffmpeg before calling process.exit().
+//
+// Why this matters for Intel iGPU (VAAPI/QSV):
+//   The i915/xe kernel driver tracks GPU hardware contexts by DRM file
+//   descriptor. When ffmpeg is SIGKILL'd (or the process just vanishes),
+//   the fd is force-closed by the kernel, but the hardware context ring is
+//   NOT always retired synchronously. The result is a "stuck" render engine
+//   that shows 100% load in intel_gpu_top / GPU-Z even though nothing is
+//   running — and it persists until the next reboot.
+//
+//   Receiving SIGTERM and exiting cleanly calls vaTerminate() / libdrm
+//   cleanup which properly retires the context ring before the fd closes.
+//   Our drainProcess() helper waits for that to happen.
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
-    app.log.info(`Received ${sig}, stopping all sessions`)
+    app.log.info(`Received ${sig} — awaiting graceful ffmpeg shutdown before exit`)
     stopIdleJanitor()
-    stopAllSessions(sig)
+    await stopAllSessionsGracefully(sig)  // blocks until every ffmpeg has exited
     try { await app.close() } catch {}
     process.exit(0)
   })

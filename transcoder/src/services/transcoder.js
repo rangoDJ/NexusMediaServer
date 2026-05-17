@@ -9,7 +9,16 @@ const HW_ACCEL = (process.env.HW_ACCEL ?? '').trim() || 'cpu'
 
 const HW_WATCHDOG_SECS = 15
 const IDLE_TIMEOUT_SECS = 60
-const SIGKILL_GRACE_MS = 3000
+
+// How long to wait for ffmpeg to exit after SIGTERM before escalating to SIGKILL.
+// VAAPI/QSV contexts need 1–5 s to drain — 8 s covers the worst case.
+const SIGKILL_GRACE_MS = 8000
+
+// After the ffmpeg process exits (or is SIGKILL'd), wait this long before
+// resolving the stop promise. The i915/xe kernel driver retires the hardware
+// context ring asynchronously; without this gap the next GPU operation can
+// see an inconsistent context state and peg the render engine.
+const GPU_CONTEXT_SETTLE_MS = 1000
 
 if (HW_ACCEL === 'qsv') {
   console.warn('[transcoder] HW_ACCEL=qsv requires jellyfin-ffmpeg or another build with libmfx/oneVPL — Alpine system ffmpeg lacks support. Use HW_ACCEL=vaapi if that is the case.')
@@ -264,20 +273,80 @@ export function touchSession(session_id) {
   if (s) s.lastAccessAt = Date.now()
 }
 
+// ─── Core stop primitive ─────────────────────────────────────────────────────
+//
+// Sends SIGTERM to the ffmpeg process and AWAITS its exit before returning.
+// This is the critical difference from the old fire-and-forget approach:
+// returning only after the process has fully exited means the caller can be
+// sure the VAAPI/QSV hardware context has been released by the i915 driver
+// before anything else runs (including process.exit in the shutdown handler).
+//
+// Escalation ladder:
+//   t=0          SIGTERM sent
+//   t=SIGKILL_GRACE_MS   ffmpeg still alive → SIGKILL
+//   t+GPU_CONTEXT_SETTLE_MS  wait for i915 to retire the hw context ring
+//   → resolve
+//
+// The 'error' event fires for SIGTERM kills too (fluent-ffmpeg treats any
+// non-zero exit as an error), so both 'end' and 'error' are treated as done.
+async function drainProcess(session_id, proc) {
+  if (!proc) return
+
+  await new Promise(resolve => {
+    let settled = false
+    const settle = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(killTimer)
+      // Brief settle gap so the kernel driver retires the GPU context ring
+      setTimeout(resolve, GPU_CONTEXT_SETTLE_MS)
+    }
+
+    proc.once('end',   settle)
+    proc.once('error', settle)
+
+    try {
+      proc.kill('SIGTERM')
+    } catch {
+      settle()
+      return
+    }
+
+    const killTimer = setTimeout(() => {
+      console.warn(
+        `[transcoder] ${session_id}: ffmpeg still running ${SIGKILL_GRACE_MS}ms after SIGTERM — ` +
+        `escalating to SIGKILL (GPU context may not release cleanly)`
+      )
+      try { proc.kill('SIGKILL') } catch {}
+      // Give the i915 driver the settle window even after SIGKILL
+      setTimeout(settle, GPU_CONTEXT_SETTLE_MS)
+    }, SIGKILL_GRACE_MS)
+  })
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+// Fire-and-forget stop — used by the idle janitor and client DELETE requests.
+// Removes the session from the store immediately (so new sessions don't see it)
+// and kicks off the drain in the background.
 export function stopSession(session_id, reason = 'manual') {
   const s = sessionStore.get(session_id)
   if (!s) return
   console.log(`[transcoder] Stopping session ${session_id} (${reason})`)
   clearTimeout(s.watchdog)
   sessionStore.delete(session_id)
-
-  const proc = s.process
-  if (proc) {
-    try { proc.kill('SIGTERM') } catch {}
-    setTimeout(() => { try { proc.kill('SIGKILL') } catch {} }, SIGKILL_GRACE_MS)
-  }
-
+  drainProcess(session_id, s.process).catch(() => {})
   rm(s.outputDir, { recursive: true, force: true }).catch(() => {})
+}
+
+// Graceful stop that RETURNS A PROMISE — used only by the shutdown handler so
+// the Node.js process doesn't exit before ffmpeg has finished releasing the GPU.
+async function stopSessionGracefully(session_id, s, reason) {
+  console.log(`[transcoder] Graceful stop: session ${session_id} (${reason})`)
+  clearTimeout(s.watchdog)
+  sessionStore.delete(session_id)
+  await drainProcess(session_id, s.process)
+  await rm(s.outputDir, { recursive: true, force: true }).catch(() => {})
 }
 
 let janitorHandle = null
@@ -298,6 +367,13 @@ export function stopIdleJanitor() {
   janitorHandle = null
 }
 
-export function stopAllSessions(reason = 'shutdown') {
-  for (const id of [...sessionStore.keys()]) stopSession(id, reason)
+// Gracefully stop every active session in parallel and wait for all of them.
+// Called by the SIGTERM handler so we're guaranteed every ffmpeg has exited
+// (and every VAAPI/QSV context has been released) before process.exit() runs.
+export async function stopAllSessionsGracefully(reason = 'shutdown') {
+  const entries = [...sessionStore.entries()]
+  if (!entries.length) return
+  console.log(`[transcoder] Gracefully stopping ${entries.length} session(s) (${reason})`)
+  await Promise.all(entries.map(([id, s]) => stopSessionGracefully(id, s, reason)))
+  console.log(`[transcoder] All sessions stopped — GPU contexts released`)
 }
