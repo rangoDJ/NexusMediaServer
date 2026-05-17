@@ -167,12 +167,21 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     setQuality(newId)
   }
 
-  // Attach JWT to hls.js segment/playlist requests (transcode mode only)
+  // Attach JWT to hls.js segment/playlist requests (transcode mode only).
+  // Also extend the manifest / level loading timeout: our API holds the playlist
+  // request open for up to 20s while ffmpeg starts producing segments. The
+  // hls.js default of 10s fires before the server responds, causing a spurious
+  // "network timeout" error. 30s gives comfortable headroom.
   function onProviderChange(provider) {
     if (provider?.type === 'hls') {
       const token = localStorage.getItem('nexus_token')
       provider.config = {
         ...provider.config,
+        manifestLoadingTimeOut:  30_000,
+        manifestLoadingMaxRetry: 2,
+        manifestLoadingRetryDelay: 500,
+        levelLoadingTimeOut:     25_000,
+        fragLoadingTimeOut:      20_000,
         xhrSetup(xhr) {
           if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
         },
@@ -207,13 +216,14 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
   // Surface hls.js / native player errors as a visible message instead of
   // leaving the user with an infinite spinning circle.
-  // Vidstack wraps errors in several possible shapes depending on whether the
-  // error came from hls.js, the native HTMLMediaElement, or a network failure —
-  // so we probe multiple paths and fall back gracefully.
+  // Vidstack puts the message directly on the event object (not under detail).
+  // We probe multiple paths in order to handle the different shapes hls.js,
+  // HTMLMediaElement, and network errors produce.
   function handlePlayerError(event) {
     console.error('[Player] error event:', event, 'detail:', event?.detail)
     const detail = event?.detail
     const msg =
+      event?.message ??
       detail?.message ??
       detail?.error?.message ??
       detail?.nativeEvent?.message ??
