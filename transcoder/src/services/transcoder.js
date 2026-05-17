@@ -1,6 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg'
 import { mkdir, rm } from 'fs/promises'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { sessionStore } from './sessionStore.js'
 
@@ -163,6 +163,18 @@ function launchSingleFfmpeg(session_id, file_path, outputDir, entry, hwAccel, is
 // master.m3u8 + per-variant playlists in subdirs (v0/, v1/, v2/).
 function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
   for (const v of ABR_VARIANTS) mkdirSync(join(outputDir, v.id), { recursive: true })
+
+  // Pre-write master.m3u8 immediately so the client doesn't have to wait for
+  // ffmpeg to finish encoding the first segment for every variant before the
+  // master playlist appears. ffmpeg will overwrite this with an equivalent file
+  // once it's ready — the pre-written copy just removes the startup latency.
+  const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3']
+  for (const v of ABR_VARIANTS) {
+    const bw = parseInt(v.bitrate) * 1000 // '1500k' → 1500000 bps
+    masterLines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${bw}`)
+    masterLines.push(`${v.id}/playlist.m3u8`)
+  }
+  writeFileSync(join(outputDir, 'master.m3u8'), masterLines.join('\n') + '\n')
 
   const proc = ffmpeg(file_path)
 

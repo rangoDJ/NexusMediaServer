@@ -168,21 +168,34 @@ export default async function streamRoutes(app) {
   })
 
   // ABR variant playlist: /:sessionId/v0/playlist.m3u8
+  // Polls with the same retry logic as master.m3u8 — hls.js fetches this
+  // immediately after parsing master.m3u8, but ffmpeg may not have written
+  // the first segment yet (CPU encoding all variants takes 5–15s).
   app.get('/:sessionId/:variant/playlist.m3u8', async (request, reply) => {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
     if (!session) return
 
+    const variantPath = `${request.params.variant}/playlist.m3u8`
     let playlist
-    try {
-      const resp = await axios.get(
-        `${session.node_url}/session/${session.remote_session_id}/${request.params.variant}/playlist.m3u8`,
-        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
-          responseType: 'text', timeout: 10_000 }
-      )
-      playlist = resp.data
-    } catch {
-      return reply.code(502).send({ error: 'Variant playlist unreachable' })
+    for (let attempt = 0; attempt < 60; attempt++) {
+      let resp
+      try {
+        resp = await axios.get(
+          `${session.node_url}/session/${session.remote_session_id}/${variantPath}`,
+          { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+            responseType: 'text', timeout: 10_000,
+            validateStatus: s => s === 200 || s === 202 }
+        )
+      } catch (err) {
+        const status = err.response?.status
+        if (status === 500) return reply.code(502).send({ error: 'Transcode failed' })
+        return reply.code(502).send({ error: 'Transcoder unreachable' })
+      }
+      if (resp.status === 200) { playlist = resp.data; break }
+      await new Promise(r => setTimeout(r, 500))
     }
+    if (!playlist) return reply.code(504).send({ error: 'Variant playlist not ready after 30s' })
+
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return playlist
   })
