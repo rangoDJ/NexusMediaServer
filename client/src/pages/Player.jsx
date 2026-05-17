@@ -45,6 +45,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     localStorage.getItem('nexus_quality') ?? DEFAULT_QUALITY
   )
   const [menuOpen, setMenuOpen]       = useState(false)
+  const [retryTrigger, setRetryTrigger] = useState(0)
 
   const progressPath = episodeId
     ? `/media/episode/${episodeId}/progress`
@@ -123,7 +124,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
     start()
     return () => { cancelled = true }
-  }, [mediaItemId, episodeId, quality])
+  }, [mediaItemId, episodeId, quality, retryTrigger])
 
   async function fetchPlaybackInfo() {
     const id = mediaItemId ?? episodeId
@@ -206,8 +207,18 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
   // Surface hls.js / native player errors as a visible message instead of
   // leaving the user with an infinite spinning circle.
+  // Vidstack wraps errors in several possible shapes depending on whether the
+  // error came from hls.js, the native HTMLMediaElement, or a network failure —
+  // so we probe multiple paths and fall back gracefully.
   function handlePlayerError(event) {
-    const msg = event.detail?.message ?? 'stream failed to load'
+    console.error('[Player] error event:', event, 'detail:', event?.detail)
+    const detail = event?.detail
+    const msg =
+      detail?.message ??
+      detail?.error?.message ??
+      detail?.nativeEvent?.message ??
+      (typeof detail === 'string' ? detail : null) ??
+      'stream failed to load'
     setError(msg)
   }
 
@@ -230,7 +241,17 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   }, [sessionId])
 
   if (error) {
-    return <div className={styles.errorBox}>Stream error: {error}</div>
+    return (
+      <div className={styles.errorBox}>
+        <div>Stream error: {error}</div>
+        <button
+          className={styles.retryBtn}
+          onClick={() => { setError(null); setRetryTrigger(n => n + 1) }}
+        >
+          ↺ Retry
+        </button>
+      </div>
+    )
   }
 
   const currentPreset = QUALITY_PRESETS.find(p => p.id === quality) ?? QUALITY_PRESETS[0]
