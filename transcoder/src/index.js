@@ -20,11 +20,18 @@ await app.register(subtitleRoutes, { prefix: '/subtitle' })
 
 app.get('/health', async () => {
   const { sessionStore } = await import('./services/sessionStore.js')
+  const sessions = [...sessionStore.entries()].map(([id, s]) => ({
+    id,
+    status:  s.status,
+    abr:     s.abr ?? false,
+    metrics: s.metrics ?? null,
+  }))
   return {
-    status: 'ok',
+    status:          'ok',
     active_sessions: sessionStore.size,
+    sessions,
     node_name: process.env.TRANSCODER_NAME ?? 'transcoder',
-    hw_accel: process.env.HW_ACCEL ?? 'cpu',
+    hw_accel:  process.env.HW_ACCEL ?? 'cpu',
   }
 })
 

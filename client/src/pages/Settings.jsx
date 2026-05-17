@@ -842,122 +842,258 @@ function StatsTab() {
   if (loading) return <div className={styles.loading}>Loading stats…</div>
   if (error)   return <div className={styles.inlineError}>Failed to load stats: {error}</div>
 
-  const { active_sessions, recent_sessions, totals } = data
+  const { active_sessions, recent_sessions, totals, node_stats, play_ratio, top_users } = data
+
+  // Direct/transcode ratio calculations
+  const totalAll   = Number(play_ratio.direct_all)   + Number(play_ratio.transcode_all)
+  const totalToday = Number(play_ratio.direct_today)  + Number(play_ratio.transcode_today)
+  const directPct  = totalAll ? Math.round(Number(play_ratio.direct_all)   / totalAll   * 100) : 0
+  const directPctToday = totalToday ? Math.round(Number(play_ratio.direct_today) / totalToday * 100) : 0
 
   return (
     <div className={styles.sectionWide}>
+
       {/* ── Summary tiles ─────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24 }}>
-        <StatsTile label="Active streams"  value={totals.active}   accent="#7c6af7" />
-        <StatsTile label="Sessions today"  value={totals.today}    accent="#4caf7d" />
-        <StatsTile label="All-time sessions" value={totals.all_time} accent="#888" />
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <StatsTile label="Active streams"    value={totals.active}   accent="#7c6af7" />
+        <StatsTile label="Transcode today"   value={totals.today}    accent="#4caf7d" />
+        <StatsTile label="All-time transcode" value={totals.all_time} accent="#888" />
+        <StatsTile label="Plays today"       value={totalToday}      accent="#f0a500" />
       </div>
 
-      {/* ── Active sessions ───────────────────────────────────────────── */}
-      <h3 className={styles.subheading}>
-        Active streams
-        {active_sessions.length > 0 && (
-          <span style={{ marginLeft: 8, ...badge('#4caf7d') }}>
-            {active_sessions.length} live
-          </span>
-        )}
-      </h3>
-
-      {active_sessions.length === 0 ? (
-        <p className={styles.empty}>No active streams right now.</p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Title</th>
-                <th>Codec</th>
-                <th>Resolution</th>
-                <th>Bitrate</th>
-                <th>Node</th>
-                <th>Running</th>
-              </tr>
-            </thead>
-            <tbody>
-              {active_sessions.map(s => (
-                <tr key={s.id}>
-                  <td>{s.username}</td>
-                  <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {s.title ?? '—'}
-                  </td>
-                  <td style={{ textTransform: 'uppercase', fontSize: 12 }}>{s.codec}</td>
-                  <td style={{ fontSize: 12 }}>{s.resolution ?? '—'}</td>
-                  <td style={{ fontSize: 12 }}>{formatBitrate(s.bitrate)}</td>
-                  <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <StreamModeBadge hw={s.hw_accel} />
-                      <span className={styles.muted} style={{ fontSize: 12 }}>{s.node_name}</span>
-                    </div>
-                  </td>
-                  <td className={styles.muted} style={{ fontSize: 12 }}>
-                    {formatDuration(s.duration_secs)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* ── Direct / Transcode ratio ───────────────────────────────────── */}
+      <div>
+        <h3 className={styles.subheading}>Play type ratio</h3>
+        <div style={{ marginTop: 8, display: 'flex', gap: 32, alignItems: 'center', flexWrap: 'wrap' }}>
+          <RatioBar label="Today"    direct={Number(play_ratio.direct_today)}    transcode={Number(play_ratio.transcode_today)} />
+          <RatioBar label="All time" direct={Number(play_ratio.direct_all)}      transcode={Number(play_ratio.transcode_all)} />
         </div>
-      )}
+      </div>
+
+      {/* ── Active streams ────────────────────────────────────────────── */}
+      <div>
+        <h3 className={styles.subheading}>
+          Active streams
+          {active_sessions.length > 0 && (
+            <span style={{ marginLeft: 8, ...badge('#4caf7d') }}>{active_sessions.length} live</span>
+          )}
+        </h3>
+
+        {active_sessions.length === 0 ? (
+          <p className={styles.empty}>No active streams right now.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>User</th><th>Title</th><th>Codec</th><th>Resolution</th>
+                  <th>Bitrate</th><th>Node</th><th>FPS</th><th>Speed</th><th>Timemark</th><th>Running</th>
+                </tr>
+              </thead>
+              <tbody>
+                {active_sessions.map(s => (
+                  <tr key={s.id}>
+                    <td>{s.username}</td>
+                    <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {s.title ?? '—'}
+                    </td>
+                    <td style={{ textTransform: 'uppercase', fontSize: 12 }}>{s.codec}</td>
+                    <td style={{ fontSize: 12 }}>{s.resolution ?? '—'}</td>
+                    <td style={{ fontSize: 12 }}>{formatBitrate(s.bitrate)}</td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <StreamModeBadge hw={s.hw_accel} />
+                        <span className={styles.muted} style={{ fontSize: 12 }}>{s.node_name}</span>
+                      </div>
+                    </td>
+                    <td className={styles.muted} style={{ fontSize: 12 }}>
+                      {s.metrics?.fps != null ? `${Math.round(s.metrics.fps)} fps` : '—'}
+                    </td>
+                    <td style={{ fontSize: 12, color: speedColor(s.metrics?.speed) }}>
+                      {s.metrics?.speed != null ? `${s.metrics.speed.toFixed(1)}×` : '—'}
+                    </td>
+                    <td className={styles.muted} style={{ fontSize: 12, fontFamily: 'monospace' }}>
+                      {s.metrics?.timemark ?? '—'}
+                    </td>
+                    <td className={styles.muted} style={{ fontSize: 12 }}>
+                      {formatDuration(s.duration_secs)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Per-node 7-day stats ──────────────────────────────────────── */}
+      <div>
+        <h3 className={styles.subheading}>Transcoder nodes — last 7 days</h3>
+        {node_stats.length === 0 ? (
+          <p className={styles.empty}>No transcoder nodes registered.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Node</th><th>Live</th><th>Sessions (7d)</th>
+                  <th>Successful</th><th>Errors</th><th>Error rate</th>
+                  <th>Avg duration</th><th>All-time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {node_stats.map(n => {
+                  const sessions7d = Number(n.sessions_7d)
+                  const errors7d   = Number(n.errors_7d)
+                  const errorRate  = sessions7d ? Math.round(errors7d / sessions7d * 100) : 0
+                  return (
+                    <tr key={n.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <StreamModeBadge hw={n.hw_accel} />
+                          <span>{n.name}</span>
+                        </div>
+                      </td>
+                      <td>
+                        {Number(n.live) > 0
+                          ? <span style={badge('#4caf7d')}>{n.live} active</span>
+                          : <span className={styles.muted}>—</span>}
+                      </td>
+                      <td>{sessions7d}</td>
+                      <td style={{ color: '#4caf7d' }}>{n.successful_7d}</td>
+                      <td style={{ color: errors7d > 0 ? '#e05555' : 'inherit' }}>{errors7d}</td>
+                      <td>
+                        {sessions7d === 0 ? <span className={styles.muted}>—</span>
+                          : <span style={{ color: errorRate > 10 ? '#e05555' : errorRate > 0 ? '#f0a500' : 'inherit' }}>
+                              {errorRate}%
+                            </span>}
+                      </td>
+                      <td className={styles.muted} style={{ fontSize: 12 }}>
+                        {formatDuration(n.avg_duration_secs_7d)}
+                      </td>
+                      <td className={styles.muted}>{n.total_sessions}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Top users (30 days) ───────────────────────────────────────── */}
+      <div>
+        <h3 className={styles.subheading}>Top users — last 30 days</h3>
+        {top_users.length === 0 ? (
+          <p className={styles.empty}>No playback recorded yet.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>User</th><th>Sessions</th><th>Direct</th><th>Transcoded</th><th>Avg watch time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top_users.map((u, i) => (
+                  <tr key={u.username}>
+                    <td>
+                      <span style={{ color: 'var(--text-muted)', marginRight: 8, fontSize: 12 }}>#{i + 1}</span>
+                      {u.username}
+                    </td>
+                    <td style={{ fontWeight: 600 }}>{u.session_count}</td>
+                    <td className={styles.muted}>{u.direct_count}</td>
+                    <td className={styles.muted}>{u.transcode_count}</td>
+                    <td className={styles.muted} style={{ fontSize: 12 }}>
+                      {formatDuration(u.avg_duration_secs)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* ── Recent history ────────────────────────────────────────────── */}
-      <h3 className={styles.subheading} style={{ marginTop: 32 }}>Recent playback history</h3>
-
-      {recent_sessions.length === 0 ? (
-        <p className={styles.empty}>No completed sessions yet.</p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Title</th>
-                <th>Codec</th>
-                <th>Resolution</th>
-                <th>Bitrate</th>
-                <th>Node</th>
-                <th>Duration</th>
-                <th>Started</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent_sessions.map(s => (
-                <tr key={s.id}>
-                  <td>{s.username}</td>
-                  <td style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {s.title ?? '—'}
-                  </td>
-                  <td style={{ textTransform: 'uppercase', fontSize: 12 }}>{s.codec}</td>
-                  <td style={{ fontSize: 12 }}>{s.resolution ?? '—'}</td>
-                  <td style={{ fontSize: 12 }}>{formatBitrate(s.bitrate)}</td>
-                  <td>
-                    {s.hw_accel
-                      ? <StreamModeBadge hw={s.hw_accel} />
-                      : <span className={styles.muted}>—</span>}
-                  </td>
-                  <td className={styles.muted} style={{ fontSize: 12 }}>
-                    {formatDuration(s.duration_secs)}
-                  </td>
-                  <td className={styles.muted} style={{ fontSize: 12 }}>
-                    {timeAgo(s.created_at)}
-                  </td>
-                  <td>
-                    <span style={badge(s.status === 'error' ? '#e05555' : '#4caf7d')}>
-                      {s.status}
-                    </span>
-                  </td>
+      <div>
+        <h3 className={styles.subheading}>Recent transcode history</h3>
+        {recent_sessions.length === 0 ? (
+          <p className={styles.empty}>No completed sessions yet.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>User</th><th>Title</th><th>Codec</th><th>Resolution</th>
+                  <th>Bitrate</th><th>Node</th><th>Duration</th><th>Started</th><th>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {recent_sessions.map(s => (
+                  <tr key={s.id}>
+                    <td>{s.username}</td>
+                    <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {s.title ?? '—'}
+                    </td>
+                    <td style={{ textTransform: 'uppercase', fontSize: 12 }}>{s.codec}</td>
+                    <td style={{ fontSize: 12 }}>{s.resolution ?? '—'}</td>
+                    <td style={{ fontSize: 12 }}>{formatBitrate(s.bitrate)}</td>
+                    <td>
+                      {s.hw_accel
+                        ? <StreamModeBadge hw={s.hw_accel} />
+                        : <span className={styles.muted}>—</span>}
+                    </td>
+                    <td className={styles.muted} style={{ fontSize: 12 }}>{formatDuration(s.duration_secs)}</td>
+                    <td className={styles.muted} style={{ fontSize: 12 }}>{timeAgo(s.created_at)}</td>
+                    <td>
+                      <span style={badge(s.status === 'error' ? '#e05555' : '#4caf7d')}>
+                        {s.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+    </div>
+  )
+}
+
+// Speed multiplier colour: red <0.5×, amber 0.5–1×, green >1×
+function speedColor(speed) {
+  if (speed == null) return 'inherit'
+  if (speed < 0.5)   return '#e05555'
+  if (speed < 1.0)   return '#f0a500'
+  return '#4caf7d'
+}
+
+function RatioBar({ label, direct, transcode }) {
+  const total = direct + transcode
+  const directPct = total ? Math.round(direct / total * 100) : 0
+  return (
+    <div style={{ minWidth: 220 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+        <strong style={{ color: 'var(--text)' }}>{label}</strong>
+        {'  '}
+        <span style={{ color: '#4caf7d' }}>Direct {directPct}%</span>
+        {'  ·  '}
+        <span style={{ color: '#7c6af7' }}>Transcode {100 - directPct}%</span>
+        {'  '}
+        <span style={{ color: 'var(--text-muted)' }}>({total} total)</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 4, background: '#7c6af744', overflow: 'hidden', width: '100%' }}>
+        <div style={{
+          height: '100%',
+          width: `${directPct}%`,
+          background: '#4caf7d',
+          borderRadius: 4,
+          transition: 'width 0.4s ease',
+        }} />
+      </div>
     </div>
   )
 }

@@ -72,6 +72,14 @@ export default async function streamRoutes(app) {
     await claimSession(app.db, node.id)
 
     const sessionId = rows[0].id
+
+    // Log a play_session record so the direct/transcode ratio is trackable
+    app.db.query(
+      `INSERT INTO play_sessions(user_id, media_item_id, episode_id, play_type, transcode_session_id)
+       VALUES($1,$2,$3,'transcode',$4)`,
+      [userId, media_item_id ?? null, episode_id ?? null, sessionId]
+    ).catch(err => app.log.warn(err, 'Failed to log play_session for transcode'))
+
     return {
       session_id:   sessionId,
       abr,
@@ -218,6 +226,17 @@ export default async function streamRoutes(app) {
     const contentType = MIME_BY_CONTAINER[row.container?.toLowerCase()] ?? 'application/octet-stream'
     const range = request.headers.range
 
+    // Log a play_session on the first request for this file (byte offset 0 or no Range
+    // header). Seeking back to position 0 re-logs, which is an acceptable approximation.
+    const rangeStart = range ? parseInt(/^bytes=(\d+)/.exec(range)?.[1] ?? '0', 10) : 0
+    if (rangeStart === 0) {
+      app.db.query(
+        `INSERT INTO play_sessions(user_id, media_item_id, episode_id, play_type)
+         VALUES($1,$2,$3,'direct')`,
+        [request.user.sub, media_item_id ?? null, episode_id ?? null]
+      ).catch(() => {}) // fire-and-forget; don't fail the stream request
+    }
+
     if (range) {
       const m = /^bytes=(\d+)-(\d*)$/.exec(range)
       if (!m) {
@@ -250,79 +269,148 @@ export default async function streamRoutes(app) {
     return reply.send(createReadStream(row.file_path))
   })
 
-  // Admin stats — active and recent transcode sessions with user/media context.
-  // Gated behind admin role so ordinary viewers can't see other users' activity.
+  // Admin stats — active and recent sessions with user/media context, per-node
+  // 7-day breakdowns, direct/transcode play ratio, top users, and live encoding
+  // metrics fetched from each transcoder node. Gated behind admin role.
   app.get('/stats', { preHandler: [requireAdmin] }, async (request) => {
-    // Active sessions with user, media title, and node info
-    const { rows: activeSessions } = await app.db.query(`
-      SELECT
-        s.id,
-        s.codec,
-        s.resolution,
-        s.bitrate,
-        s.created_at,
-        EXTRACT(EPOCH FROM (now() - s.created_at))::int AS duration_secs,
-        u.username,
-        COALESCE(
-          m.title,
-          series.title || ' · S' || LPAD(ep.season_number::text, 2, '0')
-                       || 'E' || LPAD(ep.episode_number::text, 2, '0')
-        ) AS title,
-        n.name  AS node_name,
-        n.hw_accel
-      FROM transcode_sessions s
-      JOIN users u                ON u.id = s.user_id
-      LEFT JOIN media_items m     ON m.id = s.media_item_id
-      LEFT JOIN episodes ep       ON ep.id = s.episode_id
+    const TITLE_EXPR = `COALESCE(
+      m.title,
+      series.title || ' · S' || LPAD(ep.season_number::text, 2, '0')
+                   || 'E' || LPAD(ep.episode_number::text, 2, '0')
+    )`
+    const EPISODE_JOINS = `
+      LEFT JOIN media_items m      ON m.id = s.media_item_id
+      LEFT JOIN episodes ep        ON ep.id = s.episode_id
       LEFT JOIN media_items series ON series.id = ep.series_id
-      JOIN transcoder_nodes n     ON n.id = s.transcoder_node_id
-      WHERE s.status = 'active'
-      ORDER BY s.created_at DESC
-    `)
+    `
 
-    // Last 30 completed/errored sessions
-    const { rows: recentSessions } = await app.db.query(`
-      SELECT
-        s.id,
-        s.codec,
-        s.resolution,
-        s.bitrate,
-        s.status,
-        s.created_at,
-        s.ended_at,
-        EXTRACT(EPOCH FROM (COALESCE(s.ended_at, now()) - s.created_at))::int AS duration_secs,
-        u.username,
-        COALESCE(
-          m.title,
-          series.title || ' · S' || LPAD(ep.season_number::text, 2, '0')
-                       || 'E' || LPAD(ep.episode_number::text, 2, '0')
-        ) AS title,
-        n.name  AS node_name,
-        n.hw_accel
-      FROM transcode_sessions s
-      JOIN users u                ON u.id = s.user_id
-      LEFT JOIN media_items m     ON m.id = s.media_item_id
-      LEFT JOIN episodes ep       ON ep.id = s.episode_id
-      LEFT JOIN media_items series ON series.id = ep.series_id
-      LEFT JOIN transcoder_nodes n ON n.id = s.transcoder_node_id
-      WHERE s.status IN ('done', 'error')
-      ORDER BY s.created_at DESC
-      LIMIT 30
-    `)
+    const [
+      { rows: activeSessions },
+      { rows: recentSessions },
+      { rows: [totals] },
+      { rows: nodeStats },
+      { rows: [playRatio] },
+      { rows: topUsers },
+    ] = await Promise.all([
+      // Active sessions — also select node URL + remote ID for metrics fetching
+      app.db.query(`
+        SELECT s.id, s.codec, s.resolution, s.bitrate, s.created_at,
+               s.remote_session_id,
+               EXTRACT(EPOCH FROM (now() - s.created_at))::int AS duration_secs,
+               u.username, ${TITLE_EXPR} AS title,
+               n.name AS node_name, n.hw_accel, n.url AS node_url
+        FROM transcode_sessions s
+        JOIN users u ON u.id = s.user_id
+        ${EPISODE_JOINS}
+        JOIN transcoder_nodes n ON n.id = s.transcoder_node_id
+        WHERE s.status = 'active'
+        ORDER BY s.created_at DESC
+      `),
 
-    // Summary counts
-    const { rows: counts } = await app.db.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'active')                                    AS active,
-        COUNT(*) FILTER (WHERE created_at >= now() - interval '24 hours')            AS today,
-        COUNT(*)                                                                      AS all_time
-      FROM transcode_sessions
-    `)
+      // Last 30 completed/errored sessions
+      app.db.query(`
+        SELECT s.id, s.codec, s.resolution, s.bitrate, s.status,
+               s.created_at, s.ended_at,
+               EXTRACT(EPOCH FROM (COALESCE(s.ended_at, now()) - s.created_at))::int AS duration_secs,
+               u.username, ${TITLE_EXPR} AS title,
+               n.name AS node_name, n.hw_accel
+        FROM transcode_sessions s
+        JOIN users u ON u.id = s.user_id
+        ${EPISODE_JOINS}
+        LEFT JOIN transcoder_nodes n ON n.id = s.transcoder_node_id
+        WHERE s.status IN ('done', 'error')
+        ORDER BY s.created_at DESC
+        LIMIT 30
+      `),
+
+      // Summary totals (transcode only — direct plays are in play_sessions)
+      app.db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'active')                         AS active,
+          COUNT(*) FILTER (WHERE created_at >= now() - interval '24 hours') AS today,
+          COUNT(*)                                                           AS all_time
+        FROM transcode_sessions
+      `),
+
+      // Per-node 7-day stats: session volume, error rate, avg duration
+      app.db.query(`
+        SELECT
+          n.id, n.name, n.hw_accel,
+          n.active_sessions                                                  AS live,
+          COUNT(s.id) FILTER (WHERE s.created_at >= now() - interval '7 days') AS sessions_7d,
+          COUNT(s.id) FILTER (WHERE s.status = 'done'
+                                AND s.created_at >= now() - interval '7 days') AS successful_7d,
+          COUNT(s.id) FILTER (WHERE s.status = 'error'
+                                AND s.created_at >= now() - interval '7 days') AS errors_7d,
+          ROUND(AVG(EXTRACT(EPOCH FROM (s.ended_at - s.created_at)))
+                FILTER (WHERE s.ended_at IS NOT NULL
+                           AND s.created_at >= now() - interval '7 days'))::int AS avg_duration_secs_7d,
+          COUNT(s.id)                                                        AS total_sessions
+        FROM transcoder_nodes n
+        LEFT JOIN transcode_sessions s ON s.transcoder_node_id = n.id
+        GROUP BY n.id, n.name, n.hw_accel, n.active_sessions
+        ORDER BY n.active_sessions DESC, n.name
+      `),
+
+      // Direct vs transcode ratio from the unified play_sessions log
+      app.db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE play_type = 'direct')                              AS direct_all,
+          COUNT(*) FILTER (WHERE play_type = 'transcode')                           AS transcode_all,
+          COUNT(*) FILTER (WHERE play_type = 'direct'
+                             AND started_at >= now() - interval '24 hours')         AS direct_today,
+          COUNT(*) FILTER (WHERE play_type = 'transcode'
+                             AND started_at >= now() - interval '24 hours')         AS transcode_today
+        FROM play_sessions
+      `),
+
+      // Top 10 users by session count, last 30 days
+      app.db.query(`
+        SELECT
+          u.username,
+          COUNT(ps.id)                                                              AS session_count,
+          COUNT(ps.id) FILTER (WHERE ps.play_type = 'direct')                      AS direct_count,
+          COUNT(ps.id) FILTER (WHERE ps.play_type = 'transcode')                   AS transcode_count,
+          ROUND(AVG(EXTRACT(EPOCH FROM (ps.ended_at - ps.started_at)))
+                FILTER (WHERE ps.ended_at IS NOT NULL))::int                       AS avg_duration_secs
+        FROM play_sessions ps
+        JOIN users u ON u.id = ps.user_id
+        WHERE ps.started_at >= now() - interval '30 days'
+        GROUP BY u.id, u.username
+        ORDER BY session_count DESC
+        LIMIT 10
+      `),
+    ])
+
+    // Fetch real-time encoding metrics (fps, speed, timemark) from each transcoder
+    // for the active sessions. Best-effort — failures are silently ignored so a
+    // slow or offline transcoder doesn't block the stats response.
+    const metricsMap = {}
+    await Promise.allSettled(
+      activeSessions.map(async s => {
+        try {
+          const { data } = await axios.get(
+            `${s.node_url}/session/${s.remote_session_id}/metrics`,
+            { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 2000 }
+          )
+          metricsMap[s.id] = data
+        } catch {}
+      })
+    )
+
+    // Strip internal node_url / remote_session_id before sending to client
+    const enrichedActive = activeSessions.map(({ node_url, remote_session_id, ...s }) => ({
+      ...s,
+      metrics: metricsMap[s.id] ?? null,
+    }))
 
     return {
-      active_sessions: activeSessions,
+      active_sessions: enrichedActive,
       recent_sessions: recentSessions,
-      totals: counts[0],
+      totals,
+      node_stats:  nodeStats,
+      play_ratio:  playRatio,
+      top_users:   topUsers,
     }
   })
 
@@ -340,6 +428,12 @@ export default async function streamRoutes(app) {
       "UPDATE transcode_sessions SET status='done', ended_at=now() WHERE id=$1",
       [request.params.sessionId]
     )
+    // Close the corresponding play_session so watch duration is accurate
+    app.db.query(
+      "UPDATE play_sessions SET ended_at=now() WHERE transcode_session_id=$1 AND ended_at IS NULL",
+      [request.params.sessionId]
+    ).catch(() => {})
+
     await releaseSession(app.db, session.transcoder_node_id)
 
     return reply.code(204).send()

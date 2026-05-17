@@ -200,6 +200,32 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
 function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, onHwFail, label }) {
   entry.process = proc
 
+  // Track real-time encoding metrics so the /metrics endpoint can serve them.
+  // fluent-ffmpeg's 'progress' event gives us fps/frames/bitrate/timemark;
+  // 'stderr' is needed for speed= which ffmpeg prints but fluent-ffmpeg doesn't parse.
+  proc.on('progress', progress => {
+    const s = sessionStore.get(session_id)
+    if (!s) return
+    s.metrics = {
+      fps:        progress.currentFps  ?? null,
+      frames:     progress.frames      ?? null,
+      bitrate:    progress.currentKbps ?? null,
+      timemark:   progress.timemark    ?? null,
+      speed:      s.metrics?.speed     ?? null, // preserved from stderr handler below
+      updated_at: Date.now(),
+    }
+  })
+
+  proc.on('stderr', line => {
+    const m = /speed=\s*([\d.]+)x/.exec(line)
+    if (!m) return
+    const s = sessionStore.get(session_id)
+    if (!s) return
+    if (!s.metrics) s.metrics = {}
+    s.metrics.speed      = parseFloat(m[1])
+    s.metrics.updated_at = Date.now()
+  })
+
   if (hwAccel !== 'cpu') {
     const sentinel = isAbr ? join(outputDir, 'master.m3u8') : join(outputDir, 'playlist.m3u8')
     entry.watchdog = setTimeout(() => {

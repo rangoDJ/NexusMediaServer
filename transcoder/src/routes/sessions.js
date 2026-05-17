@@ -26,6 +26,18 @@ export default async function sessionRoutes(app) {
     return { session_id: request.params.id, status: s.status, abr: !!s.abr }
   })
 
+  // Real-time encoding metrics: fps, speed multiplier, frames processed, timemark.
+  // Populated by the progress/stderr event handlers in transcoder.js.
+  // Returns nulls for all fields when ffmpeg hasn't emitted a progress line yet.
+  app.get('/:id/metrics', async (request, reply) => {
+    const s = sessionStore.get(request.params.id)
+    if (!s) return reply.code(404).send({ error: 'Session not found' })
+    touchSession(request.params.id)
+    return s.metrics ?? {
+      fps: null, speed: null, frames: null, bitrate: null, timemark: null, updated_at: null,
+    }
+  })
+
   // Single-variant playlist (non-ABR sessions)
   app.get('/:id/playlist.m3u8', async (request, reply) => {
     return servePlaylist(request, reply, ['playlist.m3u8'])
