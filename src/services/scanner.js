@@ -478,6 +478,17 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
     const seasonDirs = (await readdir(seriesPath, { withFileTypes: true })).filter(e => e.isDirectory())
     log.info(`[scan] "${title}": ${seasonDirs.length} season dir(s)`)
 
+    // Pre-load ALL known episodes for this series in a single query, then look
+    // them up by file_path from a Map inside the per-episode loop. Without this,
+    // every episode file triggers an individual SELECT — 100 episodes = 100 round
+    // trips. The Map approach collapses that to one query per series regardless
+    // of episode count.
+    const { rows: existingEps } = await db.query(
+      'SELECT id, file_size, file_path FROM episodes WHERE series_id=$1',
+      [seriesId]
+    )
+    const existingEpMap = new Map(existingEps.map(ep => [ep.file_path, ep]))
+
     for (const seasonEntry of seasonDirs) {
       const seasonMatch  = seasonEntry.name.match(/season\s*(\d+)/i)
       const seasonNumber = seasonMatch ? parseInt(seasonMatch[1]) : 0
@@ -504,15 +515,12 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
         // place — NEVER delete + re-insert (that orphans watch_progress and
         // breaks the next-episode lookup). The "refresh metadata" task is
         // the right place to re-fetch TMDB / NFO data for existing items.
-        const existingEp = await db.query(
-          'SELECT id, file_size FROM episodes WHERE file_path=$1',
-          [filePath]
-        )
-        if (existingEp.rows.length) {
+        const existingEpRow = existingEpMap.get(filePath)
+        if (existingEpRow) {
           try {
             const st = await stat(filePath)
-            const dbSize = existingEp.rows[0].file_size != null
-              ? Number(existingEp.rows[0].file_size) : null
+            const dbSize = existingEpRow.file_size != null
+              ? Number(existingEpRow.file_size) : null
             if (dbSize != null && st.size !== dbSize) {
               log.info(`[scan] Episode file size changed (${dbSize} → ${st.size}) — re-probing in place: ${epFile}`)
               const fi = await probeFile(db, filePath).catch(() => null)
@@ -523,7 +531,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
                     file_size=$6, width=$7, height=$8, bitrate_kbps=$9
                   WHERE id=$1
                 `, [
-                  existingEp.rows[0].id,
+                  existingEpRow.id,
                   fi.duration_secs ?? null, fi.video?.codec ?? null,
                   fi.audio?.codec ?? null, fi.container ?? null,
                   fi.file_size ?? null, fi.video?.width ?? null,

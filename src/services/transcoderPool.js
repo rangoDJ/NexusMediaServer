@@ -44,18 +44,21 @@ export function startHealthPoller(db, log) {
       return
     }
 
-    for (const node of nodes) {
+    // Ping all nodes concurrently — with N nodes at a 3s timeout each,
+    // sequential pinging wastes N×3s per health cycle. Promise.allSettled
+    // ensures one slow/dead node never blocks updates to healthy ones.
+    await Promise.allSettled(nodes.map(async node => {
       try {
         await axios.get(`${node.url}/health`, {
           headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
-          timeout: 3000
+          timeout: 3000,
         })
         await db.query('UPDATE transcoder_nodes SET last_seen_at=now() WHERE id=$1', [node.id])
       } catch {
         log.warn(`Transcoder node ${node.url} is unreachable`)
         // last_seen_at goes stale — pickTranscoder won't route to it
       }
-    }
+    }))
 
     // Reconcile active_sessions: count rows in transcode_sessions that are active per node
     await db.query(`
