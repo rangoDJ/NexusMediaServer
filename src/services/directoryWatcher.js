@@ -36,9 +36,11 @@ export class DirectoryWatcher {
     this.libraries   = new Map()
     /** debounce window (ms) before a dirty library triggers scanLibrary */
     this.debounceMs  = 30_000
-    /** chokidar polling interval (ms) */
-    this.pollIntervalMs = 5_000
-    /** master enable flag — disabled by default while scans never finish */
+    /** chokidar polling interval (ms) — must be high enough that recursive
+     *  stat() loops don't peg disk + DB pool. 5s was way too aggressive on
+     *  large libraries. 30s is sane for typical "drop a file" workflows. */
+    this.pollIntervalMs = 30_000
+    /** master enable flag */
     this.enabled     = true
   }
 
@@ -47,7 +49,7 @@ export class DirectoryWatcher {
     const settings = await getSettings(this.db).catch(() => ({}))
     this.enabled        = settings['watcher.enabled'] !== false           // default ON
     this.debounceMs     = (settings['watcher.debounce_secs']     ?? 30) * 1000
-    this.pollIntervalMs = (settings['watcher.poll_interval_secs'] ?? 5)  * 1000
+    this.pollIntervalMs = (settings['watcher.poll_interval_secs'] ?? 30) * 1000
     const usePolling    = settings['watcher.use_polling'] !== false      // default ON for Docker safety
 
     if (!this.enabled) {
