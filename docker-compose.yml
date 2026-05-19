@@ -42,6 +42,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      # First-launch wizard, migrations, and plugin loading can take 30–60s
+      # before the HTTP server is ready. Without start_period, the first few
+      # failed checks would mark the container unhealthy permanently.
+      start_period: 60s
 
   # ── Transcoder (separate container — can be moved to a remote host) ──────────
   transcoder:

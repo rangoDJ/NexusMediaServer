@@ -103,17 +103,24 @@ await app.register(peopleRoutes,     { prefix: '/api/v1/people' })
 await app.register(taskRoutes,       { prefix: '/api/v1/tasks' })
 await app.register(eventsRoute,      { prefix: '/api/v1' })
 
-app.get('/api/health', async () => {
-  const { rows } = await app.db.query(`
-    SELECT
-      COUNT(*) FILTER (WHERE is_enabled = true AND last_seen_at > now() - interval '2 minutes') AS online,
-      COUNT(*) FILTER (WHERE is_enabled = true)                                                  AS total
-    FROM transcoder_nodes
-  `)
-  return {
-    status: 'ok',
-    transcoder_nodes: { online: parseInt(rows[0].online), total: parseInt(rows[0].total) },
+// Docker healthcheck endpoint. MUST always return 2xx as long as the
+// server itself is responsive — the transcoder stats are best-effort and
+// must never cause the container to be marked unhealthy. A DB blip or a
+// missing migration was previously killing the health status.
+app.get('/api/health', async (request, reply) => {
+  let transcoder_nodes = null
+  try {
+    const { rows } = await app.db.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE is_enabled = true AND last_seen_at > now() - interval '2 minutes') AS online,
+        COUNT(*) FILTER (WHERE is_enabled = true)                                                  AS total
+      FROM transcoder_nodes
+    `)
+    transcoder_nodes = { online: parseInt(rows[0].online), total: parseInt(rows[0].total) }
+  } catch (err) {
+    request.log.warn({ err }, '[health] transcoder_nodes query failed (non-fatal)')
   }
+  return reply.code(200).send({ status: 'ok', transcoder_nodes })
 })
 
 // ── Plugin system ─────────────────────────────────────────────────────────────
