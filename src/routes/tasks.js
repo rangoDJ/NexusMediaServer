@@ -11,7 +11,8 @@ import { requireAdmin } from '../middleware/auth.js'
  * GET    /:id/history        Execution history (last 20 runs)
  */
 export default async function taskRoutes(app) {
-  app.addHook('preHandler', [app.authenticate, requireAdmin])
+  app.addHook('preHandler', app.authenticate)
+  app.addHook('preHandler', requireAdmin)
 
   // ── List all tasks ──────────────────────────────────────────────────────────
   app.get('/', async () => {
