@@ -174,7 +174,9 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
     masterLines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${bw}`)
     masterLines.push(`${v.id}/playlist.m3u8`)
   }
-  writeFileSync(join(outputDir, 'master.m3u8'), masterLines.join('\n') + '\n')
+  const masterContent = masterLines.join('\n') + '\n'
+  writeFileSync(join(outputDir, 'master.m3u8'), masterContent)
+  console.log(`[transcoder:${session_id}] pre-wrote master.m3u8 at ${join(outputDir, 'master.m3u8')}:\n${masterContent}`)
 
   const proc = ffmpeg(file_path)
 
@@ -219,11 +221,16 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
   })
 
   proc.run()
-  console.log(`[transcoder] Session ${session_id} started — ABR (${ABR_VARIANTS.length} variants) file=${file_path}`)
+  console.log(`[transcoder:${session_id}] ABR started — ${ABR_VARIANTS.length} variants, outputDir=${outputDir}, file=${file_path}`)
 }
 
 function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, onHwFail, label }) {
   entry.process = proc
+
+  // Log the exact ffmpeg command so we can verify options are correct.
+  proc.on('start', cmdLine => {
+    console.log(`[transcoder:${session_id}] ffmpeg command: ${cmdLine}`)
+  })
 
   // Track real-time encoding metrics so the /metrics endpoint can serve them.
   // fluent-ffmpeg's 'progress' event gives us fps/frames/bitrate/timemark;
@@ -242,6 +249,9 @@ function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, o
   })
 
   proc.on('stderr', line => {
+    // Log all ffmpeg stderr so errors, warnings, and progress are visible.
+    console.log(`[ffmpeg:${session_id}] ${line}`)
+
     const m = /speed=\s*([\d.]+)x/.exec(line)
     if (!m) return
     const s = sessionStore.get(session_id)

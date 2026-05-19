@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
-import { createReadStream, existsSync } from 'fs'
+import { createReadStream, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { sessionStore } from '../services/sessionStore.js'
 import { startTranscodeSession, stopSession, touchSession } from '../services/transcoder.js'
@@ -72,17 +72,31 @@ export default async function sessionRoutes(app) {
 
 function servePlaylist(request, reply, pathParts) {
   const s = sessionStore.get(request.params.id)
-  if (!s) return reply.code(404).send({ error: 'Session not found' })
-  if (s.status === 'error') return reply.code(500).send({ error: 'Transcode process failed' })
+  if (!s) {
+    console.log(`[sessions] playlist request for unknown session ${request.params.id}`)
+    return reply.code(404).send({ error: 'Session not found' })
+  }
+  if (s.status === 'error') {
+    console.log(`[sessions:${request.params.id}] session in error state — returning 500`)
+    return reply.code(500).send({ error: 'Transcode process failed' })
+  }
 
   touchSession(request.params.id)
 
   const fullPath = join(s.outputDir, ...pathParts)
-  if (!existsSync(fullPath)) {
+  const exists = existsSync(fullPath)
+  console.log(`[sessions:${request.params.id}] playlist ${pathParts.join('/')} → ${fullPath} exists=${exists} status=${s.status}`)
+
+  if (!exists) {
     return reply.code(202).send({ error: 'Playlist not ready yet' })
   }
+
+  let content
+  try { content = readFileSync(fullPath, 'utf8') } catch { content = '(unreadable)' }
+  console.log(`[sessions:${request.params.id}] serving playlist ${pathParts.join('/')}:\n${content}`)
+
   reply.header('Content-Type', 'application/vnd.apple.mpegurl')
-  return reply.send(createReadStream(fullPath))
+  return reply.send(content)
 }
 
 function serveSegment(request, reply, pathParts) {

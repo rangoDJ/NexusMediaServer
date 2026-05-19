@@ -98,23 +98,26 @@ export default async function streamRoutes(app) {
 
     // Poll until ffmpeg has generated at least one segment (transcoder returns 202 while not ready).
     // 60 × 500ms = 30s window: HW watchdog fires at 8s, CPU fallback needs ~2-5s → safely within 30s.
+    const pollUrl = `${session.node_url}/session/${session.remote_session_id}/playlist.m3u8`
+    app.log.info(`[stream] polling playlist.m3u8: ${pollUrl}`)
     let playlist
     for (let attempt = 0; attempt < 60; attempt++) {
       let resp
       try {
-        resp = await axios.get(
-          `${session.node_url}/session/${session.remote_session_id}/playlist.m3u8`,
-          {
-            headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
-            responseType: 'text',
-            timeout: 10_000,
-            validateStatus: s => s === 200 || s === 202,
-          }
-        )
+        resp = await axios.get(pollUrl, {
+          headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+          responseType: 'text',
+          timeout: 10_000,
+          validateStatus: s => s === 200 || s === 202,
+        })
       } catch (err) {
         const status = err.response?.status
+        app.log.error(`[stream] playlist.m3u8 poll error: status=${status} msg=${err.message}`)
         if (status === 500) return reply.code(502).send({ error: 'Transcode failed — check transcoder logs' })
         return reply.code(502).send({ error: 'Transcoder unreachable' })
+      }
+      if (attempt === 0 || attempt % 10 === 0 || resp.status === 200) {
+        app.log.info(`[stream] playlist.m3u8 attempt=${attempt} status=${resp.status}`)
       }
       if (resp.status === 200) { playlist = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
@@ -126,6 +129,7 @@ export default async function streamRoutes(app) {
       /^(segment_\d+\.ts)$/gm,
       `/api/v1/stream/${request.params.sessionId}/$1`
     )
+    app.log.info(`[stream] serving rewritten playlist.m3u8 for session ${request.params.sessionId}:\n${rewritten}`)
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return rewritten
   })
@@ -143,26 +147,32 @@ export default async function streamRoutes(app) {
     if (!session) return
 
     // Same readiness poll as single-variant — 60 × 500ms = 30s
+    const masterPollUrl = `${session.node_url}/session/${session.remote_session_id}/master.m3u8`
+    app.log.info(`[stream] polling master.m3u8: ${masterPollUrl}`)
     let master
     for (let attempt = 0; attempt < 60; attempt++) {
       let resp
       try {
-        resp = await axios.get(
-          `${session.node_url}/session/${session.remote_session_id}/master.m3u8`,
-          { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
-            responseType: 'text', timeout: 10_000,
-            validateStatus: s => s === 200 || s === 202 }
-        )
+        resp = await axios.get(masterPollUrl, {
+          headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+          responseType: 'text', timeout: 10_000,
+          validateStatus: s => s === 200 || s === 202,
+        })
       } catch (err) {
         const status = err.response?.status
+        app.log.error(`[stream] master.m3u8 poll error: status=${status} msg=${err.message}`)
         if (status === 500) return reply.code(502).send({ error: 'Transcode failed' })
         return reply.code(502).send({ error: 'Transcoder unreachable' })
+      }
+      if (attempt === 0 || attempt % 10 === 0 || resp.status === 200) {
+        app.log.info(`[stream] master.m3u8 attempt=${attempt} status=${resp.status}`)
       }
       if (resp.status === 200) { master = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
     }
     if (!master) return reply.code(504).send({ error: 'Master playlist not ready after 30s' })
 
+    app.log.info(`[stream] serving master.m3u8 for session ${request.params.sessionId}:\n${master}`)
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return master
   })
@@ -176,26 +186,32 @@ export default async function streamRoutes(app) {
     if (!session) return
 
     const variantPath = `${request.params.variant}/playlist.m3u8`
+    const variantPollUrl = `${session.node_url}/session/${session.remote_session_id}/${variantPath}`
+    app.log.info(`[stream] polling variant ${variantPath}: ${variantPollUrl}`)
     let playlist
     for (let attempt = 0; attempt < 60; attempt++) {
       let resp
       try {
-        resp = await axios.get(
-          `${session.node_url}/session/${session.remote_session_id}/${variantPath}`,
-          { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
-            responseType: 'text', timeout: 10_000,
-            validateStatus: s => s === 200 || s === 202 }
-        )
+        resp = await axios.get(variantPollUrl, {
+          headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+          responseType: 'text', timeout: 10_000,
+          validateStatus: s => s === 200 || s === 202,
+        })
       } catch (err) {
         const status = err.response?.status
+        app.log.error(`[stream] variant ${variantPath} poll error: status=${status} msg=${err.message}`)
         if (status === 500) return reply.code(502).send({ error: 'Transcode failed' })
         return reply.code(502).send({ error: 'Transcoder unreachable' })
+      }
+      if (attempt === 0 || attempt % 10 === 0 || resp.status === 200) {
+        app.log.info(`[stream] variant ${variantPath} attempt=${attempt} status=${resp.status}`)
       }
       if (resp.status === 200) { playlist = resp.data; break }
       await new Promise(r => setTimeout(r, 500))
     }
     if (!playlist) return reply.code(504).send({ error: 'Variant playlist not ready after 30s' })
 
+    app.log.info(`[stream] serving variant ${variantPath} for session ${request.params.sessionId}:\n${playlist}`)
     reply.header('Content-Type', 'application/vnd.apple.mpegurl')
     return playlist
   })
@@ -248,7 +264,7 @@ export default async function streamRoutes(app) {
         `INSERT INTO play_sessions(user_id, media_item_id, episode_id, play_type)
          VALUES($1,$2,$3,'direct')`,
         [request.user.sub, media_item_id ?? null, episode_id ?? null]
-      ).catch(() => {}) // fire-and-forget; don't fail the stream request
+      ).catch(err => app.log.warn(err, 'Failed to log direct play_session'))
     }
 
     if (range) {
@@ -408,7 +424,9 @@ export default async function streamRoutes(app) {
             { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 2000 }
           )
           metricsMap[s.id] = data
-        } catch {}
+        } catch (err) {
+          app.log.debug({ err, sessionId: s.id }, 'Failed to fetch live metrics from transcoder')
+        }
       })
     )
 
@@ -436,7 +454,7 @@ export default async function streamRoutes(app) {
     await axios.delete(
       `${session.node_url}/session/${session.remote_session_id}`,
       { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET } }
-    ).catch(() => {}) // best-effort; transcoder may already be gone
+    ).catch(err => app.log.warn(err, `Failed to stop remote transcoder session — may already be gone (node=${session.node_url})`))
 
     await app.db.query(
       "UPDATE transcode_sessions SET status='done', ended_at=now() WHERE id=$1",
@@ -446,7 +464,7 @@ export default async function streamRoutes(app) {
     app.db.query(
       "UPDATE play_sessions SET ended_at=now() WHERE transcode_session_id=$1 AND ended_at IS NULL",
       [request.params.sessionId]
-    ).catch(() => {})
+    ).catch(err => app.log.warn(err, 'Failed to close play_session on stream stop'))
 
     await releaseSession(app.db, session.transcoder_node_id)
 
