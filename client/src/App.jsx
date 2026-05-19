@@ -10,6 +10,7 @@ import MovieDetail from './pages/MovieDetail.jsx'
 import Search from './pages/Search.jsx'
 import Person from './pages/Person.jsx'
 import LibraryDetail from './pages/LibraryDetail.jsx'
+import Libraries from './pages/Libraries.jsx'
 import Layout from './components/Layout.jsx'
 
 function useAuth() {
@@ -59,6 +60,7 @@ export default function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/" element={<RequireAuth><Home /></RequireAuth>} />
       <Route path="/movie/:id" element={<RequireAuth><MovieDetail /></RequireAuth>} />
+      <Route path="/libraries" element={<RequireAuth><Libraries /></RequireAuth>} />
       <Route path="/library/:id" element={<RequireAuth><LibraryDetail /></RequireAuth>} />
       <Route path="/search" element={<RequireAuth><Search /></RequireAuth>} />
       <Route path="/person/:tmdbId" element={<RequireAuth><Person /></RequireAuth>} />

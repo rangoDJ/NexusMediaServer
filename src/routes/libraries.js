@@ -37,8 +37,9 @@ export default async function libraryRoutes(app) {
     const { rows } = await app.db.query('SELECT * FROM libraries WHERE id=$1', [request.params.id])
     if (!rows.length) return reply.code(404).send({ error: 'Library not found' })
 
-    // Fire and forget — scan runs in background
-    scanLibrary(app.db, rows[0], app.log).catch(err => app.log.error(err, 'Library scan failed'))
+    // Fire and forget — scan runs in background, broadcaster pushes live progress to SSE clients
+    scanLibrary(app.db, rows[0], app.log, app.broadcaster)
+      .catch(err => app.log.error(err, 'Library scan failed'))
     return { status: 'scanning' }
   })
 }

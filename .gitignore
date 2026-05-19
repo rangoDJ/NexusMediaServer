@@ -2,6 +2,4 @@ node_modules/
 dist/
 .env
 *.log
-
-# Runtime config directory — contains user data (plugins, database)
-config/
+/services/web/dist

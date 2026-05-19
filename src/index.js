@@ -20,10 +20,17 @@ import serverRoutes from './routes/server.js'
 import { authMiddleware } from './middleware/auth.js'
 import { startHealthPoller } from './services/transcoderPool.js'
 import { loadPlugins, callHook } from './services/pluginLoader.js'
+import { TaskScheduler } from './services/taskScheduler.js'
+import { ScanBroadcaster } from './services/scanBroadcaster.js'
 import pluginRoutes from './routes/plugins.js'
 import setupRoutes from './routes/setup.js'
 import searchRoutes from './routes/search.js'
 import peopleRoutes from './routes/people.js'
+import taskRoutes from './routes/tasks.js'
+import eventsRoute from './routes/events.js'
+import { createScanLibrariesTask } from './tasks/scanLibraries.js'
+import { cleanupSessionsTask } from './tasks/cleanupSessions.js'
+import { refreshMetadataTask } from './tasks/refreshMetadata.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
@@ -58,10 +65,25 @@ if (process.env.NODE_ENV === 'development') {
   await app.register(cors, { origin: 'http://localhost:5173' })
 }
 
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('FATAL: JWT_SECRET must be at least 32 characters. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"')
+  process.exit(1)
+}
 await app.register(fjwt, { secret: process.env.JWT_SECRET })
 
 app.decorate('authenticate', authMiddleware)
 app.decorate('db', await createPool())
+
+// ── Scan broadcaster (SSE fan-out) ────────────────────────────────────────────
+const broadcaster = new ScanBroadcaster()
+app.decorate('broadcaster', broadcaster)
+
+// ── Task scheduler ────────────────────────────────────────────────────────────
+const scheduler = new TaskScheduler(app.db, app.log)
+scheduler.register(createScanLibrariesTask(broadcaster))
+scheduler.register(cleanupSessionsTask)
+scheduler.register(refreshMetadataTask)
+app.decorate('scheduler', scheduler)
 
 // ── API routes (register before static so /api/* is never served as a file) ──
 // Setup routes must be registered first — they are publicly accessible and
@@ -78,12 +100,26 @@ await app.register(settingsRoutes,   { prefix: '/api/v1/settings' })
 await app.register(pluginRoutes,     { prefix: '/api/v1/plugins' })
 await app.register(searchRoutes,     { prefix: '/api/v1/search' })
 await app.register(peopleRoutes,     { prefix: '/api/v1/people' })
+await app.register(taskRoutes,       { prefix: '/api/v1/tasks' })
+await app.register(eventsRoute,      { prefix: '/api/v1' })
 
-app.get('/api/health', async () => ({ status: 'ok' }))
+app.get('/api/health', async () => {
+  const { rows } = await app.db.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE is_enabled = true AND last_seen_at > now() - interval '2 minutes') AS online,
+      COUNT(*) FILTER (WHERE is_enabled = true)                                                  AS total
+    FROM transcoder_nodes
+  `)
+  return {
+    status: 'ok',
+    transcoder_nodes: { online: parseInt(rows[0].online), total: parseInt(rows[0].total) },
+  }
+})
 
 // ── Plugin system ─────────────────────────────────────────────────────────────
 // Load plugins after main routes so api.routes hook can't shadow built-in endpoints.
-await loadPlugins(app.db, app.log)
+// Pass the scheduler so plugins can register their own scheduled tasks.
+await loadPlugins(app.db, app.log, scheduler)
 await callHook('api.routes', { app }, app.log)
 
 // ── Static web UI ─────────────────────────────────────────────────────────────
@@ -112,6 +148,7 @@ if (process.env.NODE_ENV !== 'development') {
 // server has started listening.
 const pollerHandle = startHealthPoller(app.db, app.log)
 app.addHook('onClose', () => clearInterval(pollerHandle))
+app.addHook('onClose', () => scheduler.stop())
 
 if (process.env.NODE_ENV !== 'development') {
   const transcoderEntry = resolve(__dirname, '../transcoder/src/index.js')
@@ -134,6 +171,9 @@ if (process.env.NODE_ENV !== 'development') {
 
 try {
   await app.listen({ port: 3000, host: '0.0.0.0' })
+  // Start the task scheduler after the server is fully up so that startup
+  // triggers fire into a ready application.
+  await scheduler.start()
 } catch (err) {
   app.log.error(err)
   process.exit(1)

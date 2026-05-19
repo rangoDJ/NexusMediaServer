@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt'
 import crypto from 'crypto'
 import { getSetting } from '../services/settingsCache.js'
+import { callHook } from '../services/pluginLoader.js'
 
 // Access tokens are short-lived (1 day). Refresh tokens are long-lived and stored
 // as bcrypt hashes so a DB breach doesn't yield usable tokens.
@@ -30,8 +31,10 @@ async function issueTokens(app, db, user, { device_name, device_type, ip_address
   return { access_token: accessToken, refresh_token: refreshToken }
 }
 
+const AUTH_RATE_LIMIT = { max: 10, timeWindow: '1 minute' }
+
 export default async function authRoutes(app) {
-  app.post('/register', async (request, reply) => {
+  app.post('/register', { config: { rateLimit: AUTH_RATE_LIMIT } }, async (request, reply) => {
     const { username, email, password, device_name, device_type } = request.body
 
     const count = await app.db.query('SELECT COUNT(*) FROM users')
@@ -65,7 +68,7 @@ export default async function authRoutes(app) {
     return reply.code(201).send({ ...tokens, user })
   })
 
-  app.post('/login', async (request, reply) => {
+  app.post('/login', { config: { rateLimit: AUTH_RATE_LIMIT } }, async (request, reply) => {
     const { username, password, device_name, device_type } = request.body
     const { rows } = await app.db.query(
       'SELECT id, username, password_hash, role FROM users WHERE username=$1',
@@ -74,6 +77,14 @@ export default async function authRoutes(app) {
     const user = rows[0]
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return reply.code(401).send({ error: 'Invalid credentials' })
+    }
+
+    // Allow plugins to veto a login (auth.login hook)
+    const hookResults = await callHook('auth.login', { username }, app.log)
+    for (const result of hookResults) {
+      if (result?.denied) {
+        return reply.code(403).send({ error: result.reason ?? 'Login denied by server policy' })
+      }
     }
 
     const tokens = await issueTokens(app, app.db, user, {
@@ -85,7 +96,7 @@ export default async function authRoutes(app) {
   })
 
   // Exchange a refresh token for a new access + refresh token pair (rotation).
-  app.post('/refresh', async (request, reply) => {
+  app.post('/refresh', { config: { rateLimit: AUTH_RATE_LIMIT } }, async (request, reply) => {
     const { refresh_token } = request.body
     if (!refresh_token) return reply.code(400).send({ error: 'refresh_token required' })
 
