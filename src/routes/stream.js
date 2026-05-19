@@ -449,7 +449,9 @@ export default async function streamRoutes(app) {
   // Diagnostic — return the transcoder's view of a session (file listing,
   // m3u8 contents, ffmpeg metrics, status). Admin-only. Useful for debugging
   // "why isn't this stream playing" without docker-exec.
-  app.get('/:sessionId/debug', { preHandler: [requireAdmin] }, async (request, reply) => {
+  // Path is /debug/:sessionId (not /:sessionId/debug) so it can't be matched
+  // by the /:sessionId/:segment wildcard route under any router behavior.
+  app.get('/debug/:sessionId', { preHandler: [requireAdmin] }, async (request, reply) => {
     const { rows } = await app.db.query(`
       SELECT s.*, n.url AS node_url, n.name AS node_name, n.hw_accel
       FROM transcode_sessions s
