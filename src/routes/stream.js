@@ -134,6 +134,25 @@ export default async function streamRoutes(app) {
     return rewritten
   })
 
+  // Lightweight per-session metrics — encoding fps/speed/timemark from the
+  // transcoder. Any authenticated user can poll metrics for their own session.
+  // Must be registered before /:sessionId/:segment so "metrics" (static) wins
+  // over the wildcard parametric match.
+  app.get('/:sessionId/metrics', async (request, reply) => {
+    const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
+    if (!session) return
+
+    try {
+      const { data } = await axios.get(
+        `${session.node_url}/session/${session.remote_session_id}/metrics`,
+        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 3_000 }
+      )
+      return data
+    } catch {
+      return {}
+    }
+  })
+
   // Proxy an individual HLS segment (single-variant sessions)
   app.get('/:sessionId/:segment', async (request, reply) => {
     return proxySegment(app, request, reply, [request.params.segment])

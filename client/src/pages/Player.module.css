@@ -36,11 +36,102 @@
   background: rgba(255, 255, 255, 0.15);
 }
 
-/* ── Quality picker ──────────────────────────────────────────────────── */
-.qualityWrap {
+/* ── Top-right control row (stats + quality) ─────────────────────────── */
+.topControls {
   position: absolute;
   top: 12px;
   right: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Stats toggle button ─────────────────────────────────────────────── */
+.statsBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  padding: 0;
+}
+.statsBtn:hover {
+  background: rgba(0, 0, 0, 0.8);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+.statsBtnActive {
+  background: var(--accent, #7b5ea7);
+  border-color: var(--accent, #7b5ea7);
+  color: #fff;
+}
+.statsBtnActive:hover {
+  background: var(--accent, #7b5ea7);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* ── Stats overlay ───────────────────────────────────────────────────── */
+.statsOverlay {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  z-index: 5;
+  min-width: 220px;
+  background: rgba(10, 10, 14, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 14px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: none; /* overlay only — don't block player controls */
+}
+
+.statsTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  margin-bottom: 8px;
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+}
+
+.statsGrid dt {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.statsGrid dd {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  word-break: break-all;
+}
+
+/* ── Quality picker ──────────────────────────────────────────────────── */
+.qualityWrap {
+  position: relative; /* was absolute — now child of .topControls */
   z-index: 5;
 }
 

@@ -29,6 +29,11 @@ const MIME_BY_CONTAINER = {
   mkv:  'video/x-matroska',
 }
 
+function formatBitrate(kbps) {
+  if (!kbps) return '—'
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} Kbps`
+}
+
 export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   const playerRef     = useRef(null)
   const lastSaveRef   = useRef(0)
@@ -39,13 +44,16 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   const [sessionId, setSessionId]     = useState(null) // null => direct play (no transcode)
   const [seekTo, setSeekTo]           = useState(0)
   const [error, setError]             = useState(null)
-  const [mode, setMode]               = useState(null) // 'direct' | 'transcode'
+  const [mode, setMode]               = useState(null) // 'direct' | 'abr' | 'transcode'
   const [tracks, setTracks]           = useState([])   // subtitle tracks for vidstack
+  const [playbackInfo, setPlaybackInfo] = useState(null) // file codec/resolution info
   const [quality, setQuality]         = useState(() =>
     localStorage.getItem('nexus_quality') ?? DEFAULT_QUALITY
   )
   const [menuOpen, setMenuOpen]       = useState(false)
   const [retryTrigger, setRetryTrigger] = useState(0)
+  const [showStats, setShowStats]     = useState(false)
+  const [statsData, setStatsData]     = useState({})   // buffer + transcoder metrics
 
   const progressPath = episodeId
     ? `/media/episode/${episodeId}/progress`
@@ -80,7 +88,10 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         let pi = null
         try { pi = await fetchPlaybackInfo() } catch {}
 
-        if (!cancelled) setTracks(buildTrackList(pi))
+        if (!cancelled) {
+          setTracks(buildTrackList(pi))
+          setPlaybackInfo(pi)
+        }
 
         // Try direct play first when on Auto
         if (preset.id === 'auto' && pi?.playback?.direct_play && pi?.playback?.direct_play_url) {
@@ -157,6 +168,48 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
   }, [menuOpen])
+
+  // Poll buffer level and (for active transcode sessions) encoding metrics
+  // every 2s while the stats overlay is open.
+  useEffect(() => {
+    if (!showStats) { setStatsData({}); return }
+
+    let cancelled = false
+
+    function readBuffer() {
+      const player = playerRef.current
+      if (!player) return null
+      const ct = player.currentTime ?? 0
+      const buf = player.buffered
+      if (!buf || buf.length === 0) return null
+      // Find the buffered range that contains (or starts at/before) current time
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf.start(i) <= ct + 0.1) {
+          return Math.max(0, buf.end(i) - ct)
+        }
+      }
+      return null
+    }
+
+    async function tick() {
+      if (cancelled) return
+      const bufferAhead = readBuffer()
+      setStatsData(prev => ({ ...prev, bufferAhead }))
+
+      if (sessionId) {
+        try {
+          const { data } = await api.get(`/stream/${sessionId}/metrics`)
+          if (!cancelled) setStatsData(prev => ({ ...prev, ...data }))
+        } catch {
+          // transcoder metrics are best-effort; don't surface errors
+        }
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, 2000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [showStats, sessionId])
 
   function changeQuality(newId) {
     setMenuOpen(false)
@@ -272,33 +325,114 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
   return (
     <div className={styles.wrap}>
-      {/* Quality picker */}
-      <div className={styles.qualityWrap} ref={menuRef}>
+      {/* Top-right controls: stats toggle + quality picker */}
+      <div className={styles.topControls}>
+        {/* Stats toggle */}
         <button
-          className={styles.qualityBtn}
-          onClick={() => setMenuOpen(o => !o)}
-          aria-label="Change quality"
+          className={`${styles.statsBtn} ${showStats ? styles.statsBtnActive : ''}`}
+          onClick={() => setShowStats(s => !s)}
+          aria-label="Toggle playback stats"
+          title="Playback stats"
         >
-          {currentPreset.label}
-          {modeBadge && <span className={styles.modePill}>{modeBadge}</span>}
-          <span style={{ marginLeft: 4 }}>▾</span>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <rect x="1"   y="7" width="3" height="6" rx="0.5" fill="currentColor"/>
+            <rect x="5.5" y="4" width="3" height="9" rx="0.5" fill="currentColor"/>
+            <rect x="10"  y="1" width="3" height="12" rx="0.5" fill="currentColor"/>
+          </svg>
         </button>
-        {menuOpen && (
-          <div className={styles.qualityMenu}>
-            <div className={styles.qualityMenuTitle}>Stream quality</div>
-            {QUALITY_PRESETS.map(p => (
-              <button
-                key={p.id}
-                className={`${styles.qualityItem} ${p.id === quality ? styles.qualityActive : ''}`}
-                onClick={() => changeQuality(p.id)}
-              >
-                <span>{p.label}</span>
-                <span className={styles.qualitySub}>{p.sub}</span>
-              </button>
-            ))}
-          </div>
-        )}
+
+        {/* Quality picker */}
+        <div className={styles.qualityWrap} ref={menuRef}>
+          <button
+            className={styles.qualityBtn}
+            onClick={() => setMenuOpen(o => !o)}
+            aria-label="Change quality"
+          >
+            {currentPreset.label}
+            {modeBadge && <span className={styles.modePill}>{modeBadge}</span>}
+            <span style={{ marginLeft: 4 }}>▾</span>
+          </button>
+          {menuOpen && (
+            <div className={styles.qualityMenu}>
+              <div className={styles.qualityMenuTitle}>Stream quality</div>
+              {QUALITY_PRESETS.map(p => (
+                <button
+                  key={p.id}
+                  className={`${styles.qualityItem} ${p.id === quality ? styles.qualityActive : ''}`}
+                  onClick={() => changeQuality(p.id)}
+                >
+                  <span>{p.label}</span>
+                  <span className={styles.qualitySub}>{p.sub}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Stats overlay */}
+      {showStats && src && (
+        <div className={styles.statsOverlay}>
+          <div className={styles.statsTitle}>Playback Stats</div>
+          <dl className={styles.statsGrid}>
+            <dt>Mode</dt>
+            <dd>
+              {mode === 'direct'    && 'Direct Play'}
+              {mode === 'abr'       && 'ABR Transcode'}
+              {mode === 'transcode' && 'Transcode'}
+              {!mode                && '—'}
+            </dd>
+
+            {playbackInfo?.file?.video_codec && (
+              <>
+                <dt>Video</dt>
+                <dd>
+                  {playbackInfo.file.video_codec.toUpperCase()}
+                  {playbackInfo.file.width && playbackInfo.file.height
+                    ? ` · ${playbackInfo.file.width}×${playbackInfo.file.height}`
+                    : ''}
+                </dd>
+              </>
+            )}
+
+            {playbackInfo?.file?.audio_codec && (
+              <>
+                <dt>Audio</dt>
+                <dd>{playbackInfo.file.audio_codec.toUpperCase()}</dd>
+              </>
+            )}
+
+            {playbackInfo?.file?.bitrate_kbps > 0 && (
+              <>
+                <dt>Bitrate</dt>
+                <dd>{formatBitrate(playbackInfo.file.bitrate_kbps)}</dd>
+              </>
+            )}
+
+            <dt>Buffer</dt>
+            <dd>{statsData.bufferAhead != null ? `${statsData.bufferAhead.toFixed(1)} s` : '—'}</dd>
+
+            {statsData.fps != null && (
+              <>
+                <dt>Encode FPS</dt>
+                <dd>{Number(statsData.fps).toFixed(1)}</dd>
+              </>
+            )}
+            {statsData.speed != null && (
+              <>
+                <dt>Speed</dt>
+                <dd>{Number(statsData.speed).toFixed(2)}×</dd>
+              </>
+            )}
+            {statsData.timemark && (
+              <>
+                <dt>Encoded to</dt>
+                <dd>{statsData.timemark}</dd>
+              </>
+            )}
+          </dl>
+        </div>
+      )}
 
       {!src && <div className={styles.loadingBox}>Starting stream…</div>}
 
