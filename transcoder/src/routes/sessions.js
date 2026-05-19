@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
-import { createReadStream, existsSync, readFileSync } from 'fs'
+import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { sessionStore } from '../services/sessionStore.js'
 import { startTranscodeSession, stopSession, touchSession } from '../services/transcoder.js'
@@ -14,9 +14,13 @@ export default async function sessionRoutes(app) {
     }
 
     const session_id = uuidv4()
-    await startTranscodeSession({ session_id, file_path, codec, resolution, bitrate, variants })
+    // startTranscodeSession returns the EFFECTIVE config — abr may be false even
+    // when variants=true if the HW accelerator forced single-variant fallback.
+    // The client uses this to decide whether to fetch master.m3u8 or playlist.m3u8.
+    const { abr } = await startTranscodeSession({ session_id, file_path, codec, resolution, bitrate, variants })
+    console.log(`[sessions] created session ${session_id} — abr=${abr} (requested variants=${!!variants})`)
 
-    return reply.code(201).send({ session_id, abr: !!variants })
+    return reply.code(201).send({ session_id, abr })
   })
 
   // Session status
@@ -24,6 +28,44 @@ export default async function sessionRoutes(app) {
     const s = sessionStore.get(request.params.id)
     if (!s) return reply.code(404).send({ error: 'Session not found' })
     return { session_id: request.params.id, status: s.status, abr: !!s.abr }
+  })
+
+  // Diagnostic: list every file in the session output directory with sizes
+  // and a peek at any .m3u8 contents. Used by the API's /debug endpoint so
+  // an admin can see exactly what ffmpeg has produced without docker-exec.
+  app.get('/:id/debug', async (request, reply) => {
+    const s = sessionStore.get(request.params.id)
+    if (!s) return reply.code(404).send({ error: 'Session not found' })
+
+    function walk(dir, base = '') {
+      const out = []
+      let entries
+      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+      for (const e of entries) {
+        const rel = base ? `${base}/${e.name}` : e.name
+        const full = join(dir, e.name)
+        if (e.isDirectory()) {
+          out.push(...walk(full, rel))
+        } else {
+          const st = statSync(full)
+          const entry = { path: rel, size: st.size, mtime: st.mtimeMs }
+          if (e.name.endsWith('.m3u8')) {
+            try { entry.content = readFileSync(full, 'utf8') } catch {}
+          }
+          out.push(entry)
+        }
+      }
+      return out
+    }
+
+    return {
+      session_id: request.params.id,
+      status:     s.status,
+      abr:        !!s.abr,
+      outputDir:  s.outputDir,
+      metrics:    s.metrics ?? null,
+      files:      walk(s.outputDir),
+    }
   })
 
   // Real-time encoding metrics: fps, speed multiplier, frames processed, timemark.

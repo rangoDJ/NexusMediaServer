@@ -446,6 +446,44 @@ export default async function streamRoutes(app) {
     }
   })
 
+  // Diagnostic — return the transcoder's view of a session (file listing,
+  // m3u8 contents, ffmpeg metrics, status). Admin-only. Useful for debugging
+  // "why isn't this stream playing" without docker-exec.
+  app.get('/:sessionId/debug', { preHandler: [requireAdmin] }, async (request, reply) => {
+    const { rows } = await app.db.query(`
+      SELECT s.*, n.url AS node_url, n.name AS node_name, n.hw_accel
+      FROM transcode_sessions s
+      JOIN transcoder_nodes n ON n.id = s.transcoder_node_id
+      WHERE s.id=$1
+    `, [request.params.sessionId])
+    if (!rows.length) return reply.code(404).send({ error: 'Session not found in DB' })
+    const session = rows[0]
+
+    let transcoderState = null
+    let transcoderError = null
+    try {
+      const { data } = await axios.get(
+        `${session.node_url}/session/${session.remote_session_id}/debug`,
+        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 5000 }
+      )
+      transcoderState = data
+    } catch (err) {
+      transcoderError = err.response?.data?.error ?? err.message
+    }
+
+    return {
+      db_session: {
+        id: session.id, status: session.status, codec: session.codec,
+        resolution: session.resolution, bitrate: session.bitrate,
+        created_at: session.created_at, ended_at: session.ended_at,
+        node_name: session.node_name, hw_accel: session.hw_accel,
+        node_url: session.node_url, remote_session_id: session.remote_session_id,
+      },
+      transcoder_state: transcoderState,
+      transcoder_error: transcoderError,
+    }
+  })
+
   // Stop a session — clean up on both sides
   app.delete('/:sessionId', async (request, reply) => {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)

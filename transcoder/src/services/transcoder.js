@@ -40,10 +40,12 @@ const RESOLUTION_MAP = {
 // variants=true; when HW_ACCEL!='cpu' we fall back to single-variant
 // because building HW ffmpeg argv with multi-scale graphs is its own
 // project. Each level has a distinct bitrate so hls.js can pick.
+// height is included so the pre-written master.m3u8 can advertise RESOLUTION,
+// which hls.js uses for level selection heuristics.
 const ABR_VARIANTS = [
-  { id: 'v0', width: 854,  bitrate: '1500k' }, // 480p
-  { id: 'v1', width: 1280, bitrate: '3000k' }, // 720p
-  { id: 'v2', width: 1920, bitrate: '6000k' }, // 1080p
+  { id: 'v0', width: 854,  height: 480,  bitrate: '1500k' }, // 480p
+  { id: 'v1', width: 1280, height: 720,  bitrate: '3000k' }, // 720p
+  { id: 'v2', width: 1920, height: 1080, bitrate: '6000k' }, // 1080p
 ]
 
 function buildCodecConfig(hwAccel, isH265) {
@@ -93,6 +95,11 @@ function buildCodecConfig(hwAccel, isH265) {
   }
 }
 
+/**
+ * Start a transcode session. Returns the effective config so the caller
+ * can tell the client whether ABR was honored (the client routes to
+ * master.m3u8 vs playlist.m3u8 based on this).
+ */
 export async function startTranscodeSession({ session_id, file_path, codec = 'h264', resolution, bitrate, variants = false }) {
   const outputDir = join(HLS_BASE, session_id)
   await mkdir(outputDir, { recursive: true })
@@ -121,7 +128,7 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
   } else {
     launchSingleFfmpeg(session_id, file_path, outputDir, entry, HW_ACCEL, isH265, preset, videoBitrate)
   }
-  return outputDir
+  return { outputDir, abr: useAbr }
 }
 
 function launchSingleFfmpeg(session_id, file_path, outputDir, entry, hwAccel, isH265, preset, videoBitrate) {
@@ -168,10 +175,16 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
   // ffmpeg to finish encoding the first segment for every variant before the
   // master playlist appears. ffmpeg will overwrite this with an equivalent file
   // once it's ready — the pre-written copy just removes the startup latency.
+  // CODECS uses a baseline H.264 profile / level + low-complexity AAC, which
+  // matches what libx264+aac at our bitrates actually produces. RESOLUTION lets
+  // hls.js pick a level based on viewport size rather than only bandwidth.
+  const CODECS = 'avc1.640028,mp4a.40.2'
   const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3']
   for (const v of ABR_VARIANTS) {
     const bw = parseInt(v.bitrate) * 1000 // '1500k' → 1500000 bps
-    masterLines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${bw}`)
+    masterLines.push(
+      `#EXT-X-STREAM-INF:BANDWIDTH=${bw},RESOLUTION=${v.width}x${v.height},CODECS="${CODECS}"`
+    )
     masterLines.push(`${v.id}/playlist.m3u8`)
   }
   const masterContent = masterLines.join('\n') + '\n'
