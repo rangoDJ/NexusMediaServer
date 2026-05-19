@@ -1,4 +1,4 @@
-import { fetchMovieMetadata, fetchSeriesMetadata } from '../services/tmdb.js'
+import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById } from '../services/tmdb.js'
 import { getSettings } from '../services/settingsCache.js'
 
 /**
@@ -38,23 +38,26 @@ export const refreshMetadataTask = {
       return
     }
 
-    // Fetch all media items with a known TMDB id
+    // Process ALL items, including those without a tmdb_id — TMDB might match
+    // them now even if it didn't at scan time (added to TMDB since, key was
+    // missing then, etc.). This is exactly what users mean by "why are my
+    // posters missing" — items that fell through the cracks at first scan.
     const { rows: items } = await db.query(`
-      SELECT id, type, title, year, tmdb_id
+      SELECT id, type, title, year, tmdb_id, poster_url
         FROM media_items
-       WHERE tmdb_id IS NOT NULL
-       ORDER BY type, title
+       ORDER BY (tmdb_id IS NOT NULL) DESC, type, title
     `)
 
     if (!items.length) {
-      log.info('[tasks/refresh-metadata] No items with a TMDB id — nothing to do')
+      log.info('[tasks/refresh-metadata] No items to refresh')
       return
     }
 
-    log.info(`[tasks/refresh-metadata] Refreshing metadata for ${items.length} item(s)`)
+    log.info(`[tasks/refresh-metadata] Refreshing ${items.length} item(s) (${items.filter(i => !i.tmdb_id).length} need a TMDB lookup)`)
 
     let done = 0
     let updated = 0
+    let matched = 0  // newly matched (tmdb_id was null, now set)
     let failed = 0
 
     for (const item of items) {
@@ -65,24 +68,33 @@ export const refreshMetadataTask = {
 
       try {
         let meta
-        if (item.type === 'movie') {
-          meta = await fetchMovieMetadata(item.title, item.year, tmdbOpts)
+        if (item.tmdb_id) {
+          // Direct ID lookup — fast and accurate
+          meta = item.type === 'movie'
+            ? await fetchMovieById(item.tmdb_id, tmdbOpts)
+            : await fetchSeriesById(item.tmdb_id, tmdbOpts)
         } else {
-          meta = await fetchSeriesMetadata(item.title, tmdbOpts)
+          // No tmdb_id yet — search by title to try to match
+          meta = item.type === 'movie'
+            ? await fetchMovieMetadata(item.title, item.year, tmdbOpts)
+            : await fetchSeriesMetadata(item.title, tmdbOpts)
+          if (meta?.tmdb_id) matched++
         }
 
         if (meta?.tmdb_id) {
           await db.query(`
             UPDATE media_items
-               SET poster_url   = COALESCE($2, poster_url),
-                   backdrop_url = COALESCE($3, backdrop_url),
-                   rating       = COALESCE($4, rating),
-                   plot         = COALESCE($5, plot),
-                   genres       = COALESCE($6, genres),
-                   tagline      = COALESCE($7, tagline)
+               SET tmdb_id      = COALESCE(tmdb_id, $2),
+                   poster_url   = COALESCE($3, poster_url),
+                   backdrop_url = COALESCE($4, backdrop_url),
+                   rating       = COALESCE($5, rating),
+                   plot         = COALESCE($6, plot),
+                   genres       = COALESCE($7, genres),
+                   tagline      = COALESCE($8, tagline)
              WHERE id = $1
           `, [
             item.id,
+            meta.tmdb_id,
             meta.poster_url   ?? null,
             meta.backdrop_url ?? null,
             meta.rating       ?? null,
@@ -93,20 +105,18 @@ export const refreshMetadataTask = {
           updated++
         }
       } catch (err) {
-        log.warn({ err }, `[tasks/refresh-metadata] Failed to refresh "${item.title}" (tmdb=${item.tmdb_id})`)
+        log.warn({ err }, `[tasks/refresh-metadata] Failed to refresh "${item.title}" (tmdb=${item.tmdb_id ?? 'none'})`)
         failed++
       }
 
       done++
       progress(Math.round((done / items.length) * 100))
-
-      // Respect TMDB rate limit (~40 req/s public; 250ms keeps us safely under)
       if (done < items.length) await sleep(250)
     }
 
     log.info(
-      `[tasks/refresh-metadata] Done — ${updated} updated, ${failed} failed, ` +
-      `${items.length - updated - failed} unchanged`
+      `[tasks/refresh-metadata] Done — ${updated} updated (${matched} newly matched), ` +
+      `${failed} failed, ${items.length - updated - failed} unchanged`
     )
   },
 }

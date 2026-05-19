@@ -1,4 +1,7 @@
 import axios from 'axios'
+import { createReadStream } from 'fs'
+import { stat } from 'fs/promises'
+import { extname } from 'path'
 import { pickTranscoder } from '../services/transcoderPool.js'
 
 // Codecs natively supported for direct play in common mobile/browser environments.
@@ -6,10 +9,30 @@ import { pickTranscoder } from '../services/transcoderPool.js'
 const DEFAULT_DIRECT_PLAY_CODECS = new Set(['h264', 'aac', 'mp3', 'vp8', 'vp9'])
 const DEFAULT_DIRECT_PLAY_CONTAINERS = new Set(['mp4', 'webm', 'm4v'])
 
+const IMAGE_MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                     '.png': 'image/png',  '.webp': 'image/webp' }
+
+/**
+ * Rewrites poster_url / backdrop_url on a media row so that when TMDB had no
+ * artwork but the scanner found a local poster.jpg / fanart.jpg, the client
+ * gets a working URL pointing at our artwork-serving endpoint.
+ * Mutates and returns the same row for convenience.
+ */
+function applyLocalArtwork(row) {
+  if (!row) return row
+  const meta = row.metadata ?? {}
+  if (!row.poster_url   && meta.local_poster_path)   row.poster_url   = `/api/v1/media/${row.id}/poster`
+  if (!row.backdrop_url && meta.local_backdrop_path) row.backdrop_url = `/api/v1/media/${row.id}/backdrop`
+  return row
+}
+
 export default async function mediaRoutes(app) {
   // Subtitle .vtt URLs are loaded by the <track> element which can't set
   // Authorization headers — accept the JWT as ?token= as a fallback.
+  // Skips auth for routes that opt in via `config.public: true` — used for
+  // poster/backdrop images so <img> tags work without token-juggling.
   app.addHook('preHandler', async (request, reply) => {
+    if (request.routeOptions?.config?.public) return
     if (request.query.token && !request.headers.authorization) {
       request.headers.authorization = `Bearer ${request.query.token}`
     }
@@ -41,13 +64,20 @@ export default async function mediaRoutes(app) {
 
     const { rows } = await app.db.query(
       `SELECT id, library_id, type, title, year, genres, poster_url, backdrop_url, rating,
-              duration_secs, video_codec, audio_codec, container, width, height, created_at
+              duration_secs, video_codec, audio_codec, container, width, height, created_at,
+              metadata
        FROM media_items ${where}
        ORDER BY ${orderBy}
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
     )
-    return rows
+    // Rewrite poster_url / backdrop_url to point at the local-artwork route
+    // for items that have local poster.jpg but no TMDB poster.
+    return rows.map(r => {
+      applyLocalArtwork(r)
+      delete r.metadata // not needed by clients listing many items
+      return r
+    })
   })
 
   // Distinct genre list (for filter dropdowns)
@@ -83,7 +113,7 @@ export default async function mediaRoutes(app) {
   app.get('/:id', async (request, reply) => {
     const { rows } = await app.db.query('SELECT * FROM media_items WHERE id=$1', [request.params.id])
     if (!rows.length) return reply.code(404).send({ error: 'Not found' })
-    const item = rows[0]
+    const item = applyLocalArtwork(rows[0])
 
     if (item.type === 'series') {
       const { rows: episodes } = await app.db.query(
@@ -96,6 +126,30 @@ export default async function mediaRoutes(app) {
     }
     return item
   })
+
+  // Serve local poster / backdrop images stored alongside the media file.
+  // PUBLIC route (config.public:true) — <img> tags can't send auth headers
+  // and posters aren't sensitive content. Cached aggressively client-side.
+  for (const kind of ['poster', 'backdrop']) {
+    app.get(`/:id/${kind}`, { config: { public: true } }, async (request, reply) => {
+      const { rows } = await app.db.query(
+        'SELECT metadata FROM media_items WHERE id=$1', [request.params.id]
+      )
+      if (!rows.length) return reply.code(404).send({ error: 'Not found' })
+      const path = rows[0].metadata?.[`local_${kind}_path`]
+      if (!path) return reply.code(404).send({ error: `No local ${kind}` })
+      let st
+      try { st = await stat(path) }
+      catch { return reply.code(404).send({ error: `${kind} file missing on disk` }) }
+      const mime = IMAGE_MIME[extname(path).toLowerCase()] ?? 'application/octet-stream'
+      reply.headers({
+        'Content-Type':   mime,
+        'Content-Length': st.size,
+        'Cache-Control':  'private, max-age=86400',
+      })
+      return reply.send(createReadStream(path))
+    })
+  }
 
   // Playback info — the primary endpoint for mobile apps before starting a stream.
   // Tells the client whether it can direct-play the file or needs transcoding,

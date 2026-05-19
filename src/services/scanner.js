@@ -48,6 +48,23 @@ import { callHook } from './pluginLoader.js'
 
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.flv'])
 
+// Local artwork filenames the scanner looks for alongside the media file.
+// Match Jellyfin / Plex / Kodi conventions. First match in each array wins.
+const POSTER_FILENAMES   = ['poster.jpg', 'poster.png', 'folder.jpg', 'folder.png',
+                            'cover.jpg', 'cover.png', 'movie.jpg', 'show.jpg']
+const BACKDROP_FILENAMES = ['fanart.jpg', 'fanart.png', 'backdrop.jpg', 'backdrop.png',
+                            'background.jpg', 'background.png']
+
+/** Find the first artwork file from `candidates` that exists in `files`. */
+function pickArtwork(files, candidates) {
+  const lower = new Map(files.map(f => [f.toLowerCase(), f]))
+  for (const cand of candidates) {
+    const hit = lower.get(cand)
+    if (hit) return hit
+  }
+  return null
+}
+
 /**
  * @param {import('pg').Pool}                             db
  * @param {object}                                        library
@@ -172,15 +189,24 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
       const nfoFile  = files.find(f => f.endsWith('.nfo'))
       const nfoPath  = nfoFile ? join(fullPath, nfoFile) : null
 
-      log.info(`[scan] Processing movie dir: ${entry.name} → ${videoFile}`)
+      // Local artwork — poster.jpg, fanart.jpg etc. alongside the video file.
+      // Stored as absolute paths in metadata so the API artwork route can serve them.
+      const posterFile   = pickArtwork(files, POSTER_FILENAMES)
+      const backdropFile = pickArtwork(files, BACKDROP_FILENAMES)
+      const localArtwork = {
+        poster_path:   posterFile   ? join(fullPath, posterFile)   : null,
+        backdrop_path: backdropFile ? join(fullPath, backdropFile) : null,
+      }
+
+      log.info(`[scan] Processing movie dir: ${entry.name} → ${videoFile}${posterFile ? ` (+poster: ${posterFile})` : ''}`)
       onItem?.(filePath)
-      const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log)
+      const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork)
       if (added) itemsAdded.push(added)
 
     } else if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
       log.info(`[scan] Processing movie file: ${entry.name}`)
       onItem?.(fullPath)
-      const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log)
+      const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log, { poster_path: null, backdrop_path: null })
       if (added) itemsAdded.push(added)
 
     } else {
@@ -192,7 +218,7 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
   return { count: itemsAdded.length, itemsAdded }
 }
 
-async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
+async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork = { poster_path: null, backdrop_path: null }) {
   // Skip when the file is already in the DB. We use a separate "refresh
   // metadata" task to update existing items — the periodic/event-driven scan
   // must NEVER delete and re-create rows, because that breaks foreign keys
@@ -277,6 +303,11 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
   // Persist embedded subtitle stream info from probe so the player can list
   // tracks without re-probing every playback.
   if (fileInfo?.subtitle_streams) merged.subtitle_streams = fileInfo.subtitle_streams
+
+  // Stash local artwork paths in metadata. If TMDB had no poster, the API
+  // /media list / GET routes will rewrite poster_url to a local-serving URL.
+  if (localArtwork.poster_path)   merged.local_poster_path   = localArtwork.poster_path
+  if (localArtwork.backdrop_path) merged.local_backdrop_path = localArtwork.backdrop_path
 
   const { rows } = await db.query(`
     INSERT INTO media_items(
@@ -379,6 +410,12 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
       const pluginResults = await callHook('metadata.series', { title, tmdbMeta: meta, nfo }, log)
       merged = tmdbOpts.nfoPriority ? { ...meta, ...nfo } : { ...nfo, ...meta }
       for (const result of pluginResults) merged = { ...merged, ...result }
+
+      // Local series artwork — poster.jpg / fanart.jpg in the series folder
+      const seriesPoster   = pickArtwork(files, POSTER_FILENAMES)
+      const seriesBackdrop = pickArtwork(files, BACKDROP_FILENAMES)
+      if (seriesPoster)   merged.local_poster_path   = join(seriesPath, seriesPoster)
+      if (seriesBackdrop) merged.local_backdrop_path = join(seriesPath, seriesBackdrop)
 
       // Check by tmdb_id AND merged.title (TMDB may give a canonical title that
       // matches an existing row even if the folder name didn't)
