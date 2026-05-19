@@ -24,11 +24,16 @@ export default async function libraryRoutes(app) {
       'INSERT INTO libraries(name, type, paths) VALUES($1,$2,$3) RETURNING *',
       [name, type, paths]
     )
+    // Start watching the new library's paths immediately
+    app.directoryWatcher?.refreshLibrary(rows[0].id).catch(err =>
+      app.log.warn({ err }, '[libraries] watcher refresh failed')
+    )
     return reply.code(201).send(rows[0])
   })
 
   app.delete('/:id', { preHandler: requireAdmin }, async (request, reply) => {
     await app.db.query('DELETE FROM libraries WHERE id=$1', [request.params.id])
+    app.directoryWatcher?.removeLibrary(request.params.id)
     return reply.code(204).send()
   })
 

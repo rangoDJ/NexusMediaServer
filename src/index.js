@@ -22,6 +22,7 @@ import { startHealthPoller } from './services/transcoderPool.js'
 import { loadPlugins, callHook } from './services/pluginLoader.js'
 import { TaskScheduler } from './services/taskScheduler.js'
 import { ScanBroadcaster } from './services/scanBroadcaster.js'
+import { DirectoryWatcher } from './services/directoryWatcher.js'
 import pluginRoutes from './routes/plugins.js'
 import setupRoutes from './routes/setup.js'
 import searchRoutes from './routes/search.js'
@@ -84,6 +85,12 @@ scheduler.register(createScanLibrariesTask(broadcaster))
 scheduler.register(cleanupSessionsTask)
 scheduler.register(refreshMetadataTask)
 app.decorate('scheduler', scheduler)
+
+// ── Directory watcher ─────────────────────────────────────────────────────────
+// Reacts to filesystem changes (new files, deletions, replacements) and runs a
+// debounced library scan — eliminates the need for frequent polling scans.
+const directoryWatcher = new DirectoryWatcher(app.db, app.log, broadcaster)
+app.decorate('directoryWatcher', directoryWatcher)
 
 // ── API routes (register before static so /api/* is never served as a file) ──
 // Setup routes must be registered first — they are publicly accessible and
@@ -156,6 +163,7 @@ if (process.env.NODE_ENV !== 'development') {
 const pollerHandle = startHealthPoller(app.db, app.log)
 app.addHook('onClose', () => clearInterval(pollerHandle))
 app.addHook('onClose', () => scheduler.stop())
+app.addHook('onClose', () => directoryWatcher.stop())
 
 if (process.env.NODE_ENV !== 'development') {
   const transcoderEntry = resolve(__dirname, '../transcoder/src/index.js')
@@ -181,6 +189,9 @@ try {
   // Start the task scheduler after the server is fully up so that startup
   // triggers fire into a ready application.
   await scheduler.start()
+  // Start filesystem watchers after the server is up — events fired during
+  // startup might race with migrations / plugin load otherwise.
+  await directoryWatcher.start()
 } catch (err) {
   app.log.error(err)
   process.exit(1)
