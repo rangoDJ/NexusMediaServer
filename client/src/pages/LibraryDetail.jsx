@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
+import { useServerEvents } from '../hooks/useServerEvents.js'
 import styles from './LibraryDetail.module.css'
 
 const SORT_OPTIONS = [
@@ -17,24 +18,58 @@ export default function LibraryDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
 
-  const [library, setLibrary] = useState(null)
-  const [items, setItems]     = useState([])
-  const [genres, setGenres]   = useState([])
-  const [genre, setGenre]     = useState('')
-  const [sort, setSort]       = useState('recently_added')
-  const [page, setPage]       = useState(1)
-  const [hasMore, setHasMore] = useState(true)
-  const [loading, setLoading] = useState(true)
+  const [library, setLibrary]   = useState(null)
+  const [items, setItems]       = useState([])
+  const [genres, setGenres]     = useState([])
+  const [genre, setGenre]       = useState('')
+  const [sort, setSort]         = useState('recently_added')
+  const [page, setPage]         = useState(1)
+  const [hasMore, setHasMore]   = useState(true)
+  const [loading, setLoading]   = useState(true)
+  const [scanning, setScanning] = useState(false)
+  const [newCount, setNewCount] = useState(0)
 
   // One-time: library info + genre list for this library
   useEffect(() => {
     api.get('/libraries').then(r => {
-      setLibrary(r.data.find(l => l.id === id) ?? null)
+      const lib = r.data.find(l => l.id === id) ?? null
+      setLibrary(lib)
+      setScanning(lib?.scan_status === 'scanning')
     }).catch(() => {})
     api.get('/media/genres', { params: { library_id: id } })
       .then(r => setGenres(r.data))
       .catch(() => setGenres([]))
   }, [id])
+
+  // Refresh first page of items (called after new items arrive)
+  const refreshItems = useCallback(() => {
+    api.get('/media', {
+      params: { library_id: id, sort, genre: genre || undefined, page: 1, limit: PAGE_SIZE }
+    }).then(r => {
+      setItems(r.data)
+      setPage(1)
+      setHasMore(r.data.length === PAGE_SIZE)
+    }).catch(() => {})
+  }, [id, sort, genre])
+
+  // Live events — listen for scans affecting this library
+  useServerEvents({
+    'refresh.progress': (e) => {
+      if (e.libraryId === id) setScanning(true)
+    },
+    'library.changed': (e) => {
+      if (e.libraryId !== id) return
+      setScanning(false)
+      if (e.itemsAdded?.length) {
+        setNewCount(e.itemsAdded.length)
+        // Auto-refresh when sorted by recently_added, otherwise prompt
+        if (sort === 'recently_added') refreshItems()
+      }
+    },
+    'scan.error': (e) => {
+      if (e.libraryId === id) setScanning(false)
+    },
+  })
 
   // Refetch items whenever filters change (resets to page 1)
   useEffect(() => {
@@ -72,9 +107,20 @@ export default function LibraryDetail() {
         {library && (
           <p className={styles.subline}>
             {library.type} · {items.length}{hasMore ? '+' : ''} item{items.length === 1 ? '' : 's'}
+            {scanning && <span className={styles.scanningBadge}>● Scanning…</span>}
           </p>
         )}
       </header>
+
+      {newCount > 0 && sort !== 'recently_added' && (
+        <div className={styles.newItemsBanner}>
+          {newCount} new item{newCount === 1 ? '' : 's'} added —{' '}
+          <button className={styles.refreshLink} onClick={() => { setNewCount(0); refreshItems() }}>
+            Refresh list
+          </button>
+        </div>
+      )}
+
 
       <div className={styles.filters}>
         <div className={styles.filterGroup}>

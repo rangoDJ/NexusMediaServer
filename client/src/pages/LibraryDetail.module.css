@@ -30,7 +30,42 @@
   color: var(--text-muted);
   text-transform: capitalize;
   margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
+
+.scanningBadge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6366f1;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+.newItemsBanner {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: rgba(99,102,241,0.1);
+  border: 1px solid rgba(99,102,241,0.3);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #a5b4fc;
+}
+
+.refreshLink {
+  background: none;
+  border: none;
+  color: #818cf8;
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: underline;
+  padding: 0;
+}
+.refreshLink:hover { color: #a5b4fc; }
 
 /* ── Filter bar ──────────────────────────────────────────────────────── */
 .filters {

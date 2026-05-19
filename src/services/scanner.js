@@ -1,5 +1,45 @@
 import { readdir } from 'fs/promises'
 import { join, extname, basename, dirname } from 'path'
+
+/** Fast recursive video-file count for progress calculation. */
+async function countVideoFiles(libraryType, rootPath, log) {
+  try {
+    const entries = await readdir(rootPath, { withFileTypes: true })
+    if (libraryType === 'movies') {
+      let count = 0
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          try {
+            const sub = await readdir(join(rootPath, e.name))
+            if (sub.some(f => VIDEO_EXTENSIONS.has(extname(f).toLowerCase()))) count++
+          } catch { /* skip unreadable dirs */ }
+        } else if (VIDEO_EXTENSIONS.has(extname(e.name).toLowerCase())) {
+          count++
+        }
+      }
+      return count
+    } else {
+      // TV: count episode files in series/season dirs
+      let count = 0
+      for (const seriesEntry of entries.filter(e => e.isDirectory())) {
+        try {
+          const seriesPath = join(rootPath, seriesEntry.name)
+          const seasonDirs = (await readdir(seriesPath, { withFileTypes: true })).filter(e => e.isDirectory())
+          for (const seasonEntry of seasonDirs) {
+            try {
+              const files = await readdir(join(seriesPath, seasonEntry.name))
+              count += files.filter(f => VIDEO_EXTENSIONS.has(extname(f).toLowerCase())).length
+            } catch { /* skip */ }
+          }
+        } catch { /* skip */ }
+      }
+      return count
+    }
+  } catch (err) {
+    log.warn(`[scan] countVideoFiles failed for "${rootPath}": ${err.message}`)
+    return 0
+  }
+}
 import { parseNfo } from './nfoParser.js'
 import { fetchMovieMetadata, fetchSeriesMetadata } from './tmdb.js'
 import { getSettings } from './settingsCache.js'
@@ -8,11 +48,30 @@ import { callHook } from './pluginLoader.js'
 
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.flv'])
 
-export async function scanLibrary(db, library, log) {
+/**
+ * @param {import('pg').Pool}                             db
+ * @param {object}                                        library
+ * @param {import('fastify').FastifyBaseLogger}           log
+ * @param {import('./scanBroadcaster.js').ScanBroadcaster|null} [broadcaster]
+ */
+export async function scanLibrary(db, library, log, broadcaster = null) {
   log.info(`[scan] Starting library "${library.name}" (id=${library.id}, type=${library.type})`)
   log.info(`[scan] Paths: ${library.paths.join(', ')}`)
 
-  await db.query('UPDATE libraries SET scan_status=$1 WHERE id=$2', ['scanning', library.id])
+  const emit = (phase, progress, currentItem = null) => {
+    broadcaster?.emitProgress(library.id, library.name, phase, progress, currentItem)
+    // Also persist to DB so REST-polling clients see it
+    db.query(
+      'UPDATE libraries SET scan_status=$1, scan_progress=$2, scan_phase=$3, scan_current=$4 WHERE id=$5',
+      ['scanning', progress, phase, currentItem, library.id]
+    ).catch(() => {})
+  }
+
+  await db.query(
+    'UPDATE libraries SET scan_status=$1, scan_progress=$2, scan_phase=$3, scan_current=$4 WHERE id=$5',
+    ['scanning', 0, 'Starting', null, library.id]
+  )
+  emit('Discovering files', 0)
 
   const settings = await getSettings(db)
   const tmdbOpts = {
@@ -25,32 +84,61 @@ export async function scanLibrary(db, library, log) {
   log.info(`[scan] TMDB enabled=${tmdbOpts.enabled}, hasKey=${!!tmdbOpts.apiKey}, language=${tmdbOpts.language}`)
 
   try {
-    let itemCount = 0
+    // Quick pre-count so per-item progress is accurate
+    let totalFiles = 0
     for (const rootPath of library.paths) {
-      log.info(`[scan] → Scanning path: ${rootPath}`)
-      if (library.type === 'movies') {
-        itemCount += await scanMovies(db, library, rootPath, tmdbOpts, log)
-      } else if (library.type === 'series' || library.type === 'tv') {
-        itemCount += await scanTv(db, library, rootPath, tmdbOpts, log)
-      } else {
-        log.warn(`[scan] Unknown library type "${library.type}" — skipping ${rootPath}`)
-      }
+      totalFiles += await countVideoFiles(library.type, rootPath, log)
+    }
+    log.info(`[scan] Pre-count: ${totalFiles} video file(s) found across ${library.paths.length} path(s)`)
+    emit('Discovering files', 5)
+
+    // Progress tracker shared across all paths
+    let processedFiles = 0
+    const onItem = (filename) => {
+      processedFiles++
+      const pct = totalFiles > 0 ? Math.round(5 + (processedFiles / totalFiles) * 80) : 50
+      emit('Importing', pct, basename(filename))
     }
 
+    let itemsAdded = []
+
+    for (const rootPath of library.paths) {
+      log.info(`[scan] → Scanning path: ${rootPath}`)
+      let result
+      if (library.type === 'movies') {
+        result = await scanMovies(db, library, rootPath, tmdbOpts, log, onItem)
+      } else if (library.type === 'series' || library.type === 'tv') {
+        result = await scanTv(db, library, rootPath, tmdbOpts, log, onItem)
+      } else {
+        log.warn(`[scan] Unknown library type "${library.type}" — skipping ${rootPath}`)
+        continue
+      }
+      itemsAdded = itemsAdded.concat(result.itemsAdded)
+    }
+
+    const itemCount = itemsAdded.length
+    emit('Finishing', 95)
     log.info(`[scan] ✓ Library "${library.name}" complete — ${itemCount} new item(s) added`)
+
     await db.query(
-      'UPDATE libraries SET scan_status=$1, last_scanned_at=now() WHERE id=$2',
+      'UPDATE libraries SET scan_status=$1, last_scanned_at=now(), scan_progress=100, scan_phase=NULL, scan_current=NULL WHERE id=$2',
       ['idle', library.id]
     )
-    callHook('scan.complete', { library, itemCount }, log).catch(() => {})
+
+    callHook('scan.complete', { library, itemCount }, log).catch(err => log.warn({ err }, '[scan] scan.complete hook failed'))
+    broadcaster?.emitScanComplete(library.id, library.name, itemsAdded)
   } catch (err) {
     log.error({ err }, `[scan] ✗ Library "${library.name}" failed: ${err.message}`)
-    await db.query('UPDATE libraries SET scan_status=$1 WHERE id=$2', ['error', library.id])
+    await db.query(
+      'UPDATE libraries SET scan_status=$1, scan_progress=NULL, scan_phase=NULL, scan_current=NULL WHERE id=$2',
+      ['error', library.id]
+    )
+    broadcaster?.emitScanError(library.id, library.name, err.message)
     throw err
   }
 }
 
-async function scanMovies(db, library, rootPath, tmdbOpts, log) {
+async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
   let entries
   try {
     entries = await readdir(rootPath, { withFileTypes: true })
@@ -60,7 +148,7 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log) {
   }
 
   log.info(`[scan] Found ${entries.length} entries in ${rootPath}`)
-  let count = 0
+  const itemsAdded = []
 
   for (const entry of entries) {
     const fullPath = join(rootPath, entry.name)
@@ -85,19 +173,23 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log) {
       const nfoPath  = nfoFile ? join(fullPath, nfoFile) : null
 
       log.info(`[scan] Processing movie dir: ${entry.name} → ${videoFile}`)
-      if (await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log)) count++
+      onItem?.(filePath)
+      const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log)
+      if (added) itemsAdded.push(added)
 
     } else if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
       log.info(`[scan] Processing movie file: ${entry.name}`)
-      if (await upsertMovie(db, library, fullPath, null, tmdbOpts, log)) count++
+      onItem?.(fullPath)
+      const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log)
+      if (added) itemsAdded.push(added)
 
     } else {
       log.debug(`[scan] Skipping non-video entry: ${entry.name}`)
     }
   }
 
-  log.info(`[scan] Movies path done — ${count} new item(s) from ${rootPath}`)
-  return count
+  log.info(`[scan] Movies path done — ${itemsAdded.length} new item(s) from ${rootPath}`)
+  return { count: itemsAdded.length, itemsAdded }
 }
 
 async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
@@ -177,15 +269,15 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
 
   if (rows[0]) {
     log.info(`[scan] ✓ Inserted movie "${rows[0].title}" (${rows[0].year ?? '?'}) tmdb=${rows[0].tmdb_id ?? 'none'}`)
-    callHook('media.added', { type: 'movie', ...rows[0] }, log).catch(() => {})
+    callHook('media.added', { type: 'movie', ...rows[0] }, log).catch(err => log.warn({ err }, '[scan] media.added hook failed'))
+    return { id: rows[0].id, title: rows[0].title, type: 'movie' }
   } else {
     log.warn(`[scan] Insert returned no row for "${title}" — possible conflict`)
+    return null
   }
-
-  return !!rows[0]
 }
 
-async function scanTv(db, library, rootPath, tmdbOpts, log) {
+async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
   let seriesDirs
   try {
     seriesDirs = await readdir(rootPath, { withFileTypes: true })
@@ -196,7 +288,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
 
   const seriesFolders = seriesDirs.filter(e => e.isDirectory())
   log.info(`[scan] Found ${seriesFolders.length} series folder(s) in ${rootPath}`)
-  let count = 0
+  const itemsAdded = []
 
   for (const seriesEntry of seriesFolders) {
     const seriesPath = join(rootPath, seriesEntry.name)
@@ -258,8 +350,8 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
       seriesId = rows[0]?.id
       if (rows[0]) {
         log.info(`[scan] ✓ Inserted series "${rows[0].title}" tmdb=${rows[0].tmdb_id ?? 'none'}`)
-        callHook('media.added', { type: 'series', ...rows[0] }, log).catch(() => {})
-        count++
+        callHook('media.added', { type: 'series', ...rows[0] }, log).catch(err => log.warn({ err }, '[scan] media.added hook failed'))
+        itemsAdded.push({ id: rows[0].id, title: rows[0].title, type: 'series' })
       } else {
         log.warn(`[scan] Series insert returned no row for "${title}"`)
       }
@@ -297,6 +389,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
         const epNfoPath     = episodeFiles.includes(epNfoFile) ? join(seasonPath, epNfoFile) : null
         const epNfo         = epNfoPath ? await parseNfo(epNfoPath).catch(() => ({})) : {}
 
+        onItem?.(filePath)
         log.info(`[scan] Episode S${String(seasonNumber).padStart(2,'0')}E${String(episodeNumber).padStart(2,'0')} — ${epFile}`)
 
         let fileInfo = null
@@ -333,8 +426,8 @@ async function scanTv(db, library, rootPath, tmdbOpts, log) {
     }
   }
 
-  log.info(`[scan] TV path done — ${count} new series from ${rootPath}`)
-  return count
+  log.info(`[scan] TV path done — ${itemsAdded.length} new series from ${rootPath}`)
+  return { count: itemsAdded.length, itemsAdded }
 }
 
 function guessTitle(filePath) {
