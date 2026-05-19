@@ -1,4 +1,4 @@
-import { readdir } from 'fs/promises'
+import { readdir, stat } from 'fs/promises'
 import { join, extname, basename, dirname } from 'path'
 
 /** Fast recursive video-file count for progress calculation. */
@@ -193,10 +193,26 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
 }
 
 async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log) {
-  const existing = await db.query('SELECT id FROM media_items WHERE file_path=$1', [filePath])
+  // Skip when the file is already in the DB AND hasn't changed on disk.
+  // mtime check catches re-encodes / file replacements so the probe is rerun.
+  const existing = await db.query(
+    'SELECT id, file_size FROM media_items WHERE file_path=$1',
+    [filePath]
+  )
   if (existing.rows.length) {
-    log.debug(`[scan] Already in DB, skipping: ${basename(filePath)}`)
-    return false
+    let stillSame = true
+    try {
+      const st = await stat(filePath)
+      if (existing.rows[0].file_size != null && st.size !== Number(existing.rows[0].file_size)) {
+        stillSame = false
+      }
+    } catch { /* if stat fails, assume same and skip */ }
+    if (stillSame) {
+      log.debug(`[scan] Already in DB, skipping: ${basename(filePath)}`)
+      return false
+    }
+    log.info(`[scan] File changed on disk — re-probing: ${basename(filePath)}`)
+    await db.query('DELETE FROM media_items WHERE id=$1', [existing.rows[0].id])
   }
 
   const nfo   = nfoPath ? await parseNfo(nfoPath).catch(e => { log.warn(`[scan] NFO parse failed (${nfoPath}): ${e.message}`); return {} }) : {}
@@ -304,38 +320,60 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
 
     const nfoFile = files.find(f => f === 'tvshow.nfo')
     const nfoPath = nfoFile ? join(seriesPath, nfoFile) : null
-    const nfo     = nfoPath ? await parseNfo(nfoPath).catch(e => { log.warn(`[scan] NFO parse failed: ${e.message}`); return {} }) : {}
-    const title   = nfo.title ?? seriesEntry.name
+    const folderTitle = seriesEntry.name
 
-    // TMDB
+    // Fast existence check FIRST — match by folder name to avoid hitting TMDB
+    // for every existing series on every scan. We only fall back to TMDB
+    // lookup if this is genuinely a new series folder.
+    const existingByFolder = await db.query(
+      `SELECT id FROM media_items
+       WHERE library_id=$1 AND type='series' AND title=$2`,
+      [library.id, folderTitle]
+    )
+    let seriesId = existingByFolder.rows[0]?.id
+    let nfo = {}
     let meta = {}
-    if (tmdbOpts.enabled && tmdbOpts.apiKey) {
-      log.info(`[scan] Fetching TMDB series metadata for "${title}"`)
-      try {
-        meta = await fetchSeriesMetadata(title, tmdbOpts)
-        if (meta.tmdb_id) {
-          log.info(`[scan] TMDB match: "${meta.title}" (id=${meta.tmdb_id})`)
-        } else {
-          log.warn(`[scan] No TMDB match for series "${title}"`)
+    let merged = {}
+
+    if (seriesId) {
+      log.debug(`[scan] Series "${folderTitle}" already in DB (id=${seriesId}) — scanning episodes only`)
+    } else {
+      // New series — parse NFO + hit TMDB
+      nfo = nfoPath ? await parseNfo(nfoPath).catch(e => { log.warn(`[scan] NFO parse failed: ${e.message}`); return {} }) : {}
+      const title = nfo.title ?? folderTitle
+
+      if (tmdbOpts.enabled && tmdbOpts.apiKey) {
+        log.info(`[scan] Fetching TMDB series metadata for "${title}"`)
+        try {
+          meta = await fetchSeriesMetadata(title, tmdbOpts)
+          if (meta.tmdb_id) {
+            log.info(`[scan] TMDB match: "${meta.title}" (id=${meta.tmdb_id})`)
+          } else {
+            log.warn(`[scan] No TMDB match for series "${title}"`)
+          }
+        } catch (err) {
+          log.warn(`[scan] TMDB fetch failed for series "${title}": ${err.message}`)
         }
-      } catch (err) {
-        log.warn(`[scan] TMDB fetch failed for series "${title}": ${err.message}`)
+      }
+
+      const pluginResults = await callHook('metadata.series', { title, tmdbMeta: meta, nfo }, log)
+      merged = tmdbOpts.nfoPriority ? { ...meta, ...nfo } : { ...nfo, ...meta }
+      for (const result of pluginResults) merged = { ...merged, ...result }
+
+      // Re-check after TMDB enrichment — maybe a tmdb_id match exists from a
+      // previous scan that used a different folder name.
+      if (merged.tmdb_id) {
+        const byTmdb = await db.query(
+          `SELECT id FROM media_items WHERE tmdb_id=$1 AND library_id=$2`,
+          [merged.tmdb_id, library.id]
+        )
+        seriesId = byTmdb.rows[0]?.id
       }
     }
 
-    const pluginResults = await callHook('metadata.series', { title, tmdbMeta: meta, nfo }, log)
-    let merged = tmdbOpts.nfoPriority ? { ...meta, ...nfo } : { ...nfo, ...meta }
-    for (const result of pluginResults) merged = { ...merged, ...result }
+    const title = nfo.title ?? folderTitle
 
-    const existingQ = merged.tmdb_id
-      ? await db.query(`SELECT id FROM media_items WHERE tmdb_id=$1 AND library_id=$2`, [merged.tmdb_id, library.id])
-      : await db.query(`SELECT id FROM media_items WHERE title=$1 AND library_id=$2 AND type='series'`, [merged.title ?? title, library.id])
-
-    let seriesId = existingQ.rows[0]?.id
-
-    if (seriesId) {
-      log.debug(`[scan] Series "${title}" already in DB (id=${seriesId}) — scanning episodes only`)
-    } else {
+    if (!seriesId) {
       const { rows } = await db.query(`
         INSERT INTO media_items(library_id, type, title, sort_title, year, tmdb_id, imdb_id, plot, genres, poster_url, backdrop_url, rating, nfo_path, metadata)
         VALUES($1,'series',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
@@ -385,6 +423,31 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
         const epMatch       = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
         const episodeNumber = epMatch ? parseInt(epMatch[2]) : 0
         const filePath      = join(seasonPath, epFile)
+
+        // Early-skip: if the file is already in the DB and unchanged on disk,
+        // don't probe, don't parse NFO, don't touch TMDB. This is the hot path
+        // for re-scans of established libraries — keep it O(1) DB lookup.
+        const existingEp = await db.query(
+          'SELECT id, file_size FROM episodes WHERE file_path=$1',
+          [filePath]
+        )
+        if (existingEp.rows.length) {
+          let stillSame = true
+          try {
+            const st = await stat(filePath)
+            if (existingEp.rows[0].file_size != null && st.size !== Number(existingEp.rows[0].file_size)) {
+              stillSame = false
+            }
+          } catch { /* stat fail → keep existing row, skip */ }
+          if (stillSame) {
+            onItem?.(filePath)
+            log.debug(`[scan] Episode already in DB, skipping: ${epFile}`)
+            continue
+          }
+          log.info(`[scan] Episode file changed on disk — re-probing: ${epFile}`)
+          await db.query('DELETE FROM episodes WHERE id=$1', [existingEp.rows[0].id])
+        }
+
         const epNfoFile     = epFile.replace(extname(epFile), '.nfo')
         const epNfoPath     = episodeFiles.includes(epNfoFile) ? join(seasonPath, epNfoFile) : null
         const epNfo         = epNfoPath ? await parseNfo(epNfoPath).catch(() => ({})) : {}
