@@ -37,6 +37,19 @@ export default async function libraryRoutes(app) {
     return reply.code(204).send()
   })
 
+  // Delete series rows that have zero episodes — typically duplicates created
+  // by a previous broken scan that couldn't match an existing series and
+  // inserted a new empty row. Movies are unaffected (they don't have episodes).
+  app.post('/cleanup-empty-series', { preHandler: requireAdmin }, async (request) => {
+    const { rows } = await app.db.query(`
+      DELETE FROM media_items
+      WHERE type='series'
+        AND id NOT IN (SELECT DISTINCT series_id FROM episodes WHERE series_id IS NOT NULL)
+      RETURNING id, title
+    `)
+    return { deleted: rows.length, items: rows }
+  })
+
   // Trigger a library scan
   app.post('/:id/scan', { preHandler: requireAdmin }, async (request, reply) => {
     const { rows } = await app.db.query('SELECT * FROM libraries WHERE id=$1', [request.params.id])
