@@ -129,6 +129,40 @@
   word-break: break-all;
 }
 
+/* ── Quality-switch overlay ─────────────────────────────────────────── */
+/* Shown on top of the existing player while the new playlist URL is being
+   negotiated. Keeps the old frame visible instead of going to a black screen. */
+.switchingOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.switchingSpinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
 /* ── Quality picker ──────────────────────────────────────────────────── */
 .qualityWrap {
   position: relative; /* was absolute — now child of .topControls */

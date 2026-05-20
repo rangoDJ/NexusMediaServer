@@ -30,7 +30,7 @@ export default async function streamRoutes(app) {
   // and returns an opaque playlist URL. The client never needs to know where the
   // transcoder lives.
   app.post('/start', async (request, reply) => {
-    let { media_item_id, episode_id, codec = 'h264', resolution = '1080p', bitrate, variants = false } = request.body
+    let { media_item_id, episode_id, codec = 'h264', resolution = '1080p', bitrate, variants = false, start_time_secs = 0 } = request.body
     const userId = request.user.sub
 
     const filePath = await resolveFilePath(app.db, media_item_id, episode_id, reply)
@@ -50,7 +50,7 @@ export default async function streamRoutes(app) {
     try {
       const { data } = await axios.post(
         `${node.url}/session`,
-        { file_path: filePath, codec, resolution, bitrate, variants },
+        { file_path: filePath, codec, resolution, bitrate, variants, start_time_secs },
         { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 10_000 }
       )
       remoteSessionId = data.session_id

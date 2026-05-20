@@ -100,7 +100,7 @@ function buildCodecConfig(hwAccel, isH265) {
  * can tell the client whether ABR was honored (the client routes to
  * master.m3u8 vs playlist.m3u8 based on this).
  */
-export async function startTranscodeSession({ session_id, file_path, codec = 'h264', resolution, bitrate, variants = false }) {
+export async function startTranscodeSession({ session_id, file_path, codec = 'h264', resolution, bitrate, variants = false, start_time_secs = 0 }) {
   const outputDir = join(HLS_BASE, session_id)
   await mkdir(outputDir, { recursive: true })
 
@@ -124,17 +124,22 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
   sessionStore.set(session_id, entry)
 
   if (useAbr) {
-    launchAbrFfmpeg(session_id, file_path, outputDir, entry)
+    launchAbrFfmpeg(session_id, file_path, outputDir, entry, start_time_secs)
   } else {
-    launchSingleFfmpeg(session_id, file_path, outputDir, entry, HW_ACCEL, isH265, preset, videoBitrate)
+    launchSingleFfmpeg(session_id, file_path, outputDir, entry, HW_ACCEL, isH265, preset, videoBitrate, start_time_secs)
   }
   return { outputDir, abr: useAbr }
 }
 
-function launchSingleFfmpeg(session_id, file_path, outputDir, entry, hwAccel, isH265, preset, videoBitrate) {
+function launchSingleFfmpeg(session_id, file_path, outputDir, entry, hwAccel, isH265, preset, videoBitrate, startTimeSecs = 0) {
   const { inputOptions, videoCodec, scaleFilter, extraOptions } = buildCodecConfig(hwAccel, isH265)
 
   const proc = ffmpeg(file_path)
+  // -ss as an INPUT option (before -i) uses fast keyframe seek, which is orders
+  // of magnitude quicker than output seeking for large offsets. The output
+  // timestamps restart from 0, so the HLS stream appears to begin at 0 even
+  // though it covers [startTimeSecs, end_of_file] of the source.
+  if (startTimeSecs > 0) proc.inputOptions(`-ss ${startTimeSecs}`)
   if (inputOptions.length) proc.inputOptions(inputOptions)
 
   proc
@@ -157,7 +162,7 @@ function launchSingleFfmpeg(session_id, file_path, outputDir, entry, hwAccel, is
   attachLifecycle({
     session_id, proc, entry, outputDir, hwAccel, isH265,
     onHwFail: () => launchSingleFfmpeg(session_id, file_path, outputDir, entry, 'cpu', isH265,
-      RESOLUTION_MAP['1080p'], videoBitrate),
+      RESOLUTION_MAP['1080p'], videoBitrate, startTimeSecs),
     isAbr: false,
     label: videoCodec,
   })
@@ -168,7 +173,7 @@ function launchSingleFfmpeg(session_id, file_path, outputDir, entry, hwAccel, is
 
 // CPU multi-variant ABR. Uses ffmpeg's -var_stream_map to produce one
 // master.m3u8 + per-variant playlists in subdirs (v0/, v1/, v2/).
-function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
+function launchAbrFfmpeg(session_id, file_path, outputDir, entry, startTimeSecs = 0) {
   for (const v of ABR_VARIANTS) mkdirSync(join(outputDir, v.id), { recursive: true })
 
   // Pre-write master.m3u8 immediately so the client doesn't have to wait for
@@ -192,6 +197,8 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry) {
   console.log(`[transcoder:${session_id}] pre-wrote master.m3u8 at ${join(outputDir, 'master.m3u8')}:\n${masterContent}`)
 
   const proc = ffmpeg(file_path)
+  // Fast input seek — same reasoning as launchSingleFfmpeg above.
+  if (startTimeSecs > 0) proc.inputOptions(`-ss ${startTimeSecs}`)
 
   const opts = []
   // Per-variant video stream config
