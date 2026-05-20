@@ -490,8 +490,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
     const existingEpMap = new Map(existingEps.map(ep => [ep.file_path, ep]))
 
     for (const seasonEntry of seasonDirs) {
-      const seasonMatch  = seasonEntry.name.match(/season\s*(\d+)/i)
-      const seasonNumber = seasonMatch ? parseInt(seasonMatch[1]) : 0
+      const seasonNumber = parseSeasonNumber(seasonEntry.name)
       const seasonPath   = join(seriesPath, seasonEntry.name)
 
       let episodeFiles
@@ -503,7 +502,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
       }
 
       const videoFiles = episodeFiles.filter(f => VIDEO_EXTENSIONS.has(extname(f).toLowerCase()))
-      log.info(`[scan] "${title}" S${seasonNumber}: ${videoFiles.length} episode file(s)`)
+      log.info(`[scan] "${title}" S${String(seasonNumber).padStart(2,'0')}: ${videoFiles.length} episode file(s)`)
 
       for (const epFile of videoFiles) {
         const epMatch       = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
@@ -584,6 +583,88 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
         ])
       }
     }
+
+    // Flat layout: video files sitting directly in the series folder with no
+    // season subdirectories. Season and episode numbers come entirely from the
+    // filename (e.g. "Show.S02E05.mkv"). Also catches loose files (specials,
+    // extras) sitting alongside season folders in a mixed layout.
+    const rootVideoFiles = files.filter(f => VIDEO_EXTENSIONS.has(extname(f).toLowerCase()))
+    if (rootVideoFiles.length > 0) {
+      log.info(`[scan] "${title}": ${rootVideoFiles.length} file(s) in series root (flat/mixed layout)`)
+      for (const epFile of rootVideoFiles) {
+        const epMatch       = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
+        const seasonNumber  = epMatch ? parseInt(epMatch[1]) : 1
+        const episodeNumber = epMatch ? parseInt(epMatch[2]) : 0
+        const filePath      = join(seriesPath, epFile)
+
+        const existingEpRow = existingEpMap.get(filePath)
+        if (existingEpRow) {
+          try {
+            const st = await stat(filePath)
+            const dbSize = existingEpRow.file_size != null ? Number(existingEpRow.file_size) : null
+            if (dbSize != null && st.size !== dbSize) {
+              log.info(`[scan] Episode file size changed (${dbSize} → ${st.size}) — re-probing in place: ${epFile}`)
+              const fi = await probeFile(db, filePath).catch(() => null)
+              if (fi) {
+                await db.query(`
+                  UPDATE episodes SET
+                    duration_secs=$2, video_codec=$3, audio_codec=$4, container=$5,
+                    file_size=$6, width=$7, height=$8, bitrate_kbps=$9
+                  WHERE id=$1
+                `, [
+                  existingEpRow.id,
+                  fi.duration_secs ?? null, fi.video?.codec ?? null,
+                  fi.audio?.codec ?? null,  fi.container ?? null,
+                  fi.file_size ?? null,     fi.video?.width ?? null,
+                  fi.video?.height ?? null, fi.bitrate_kbps ?? null,
+                ])
+              }
+            }
+          } catch { /* stat fail → keep existing row */ }
+          onItem?.(filePath)
+          log.debug(`[scan] Episode already in DB, skipping: ${epFile}`)
+          continue
+        }
+
+        const epNfoFile = epFile.replace(extname(epFile), '.nfo')
+        const epNfoPath = files.includes(epNfoFile) ? join(seriesPath, epNfoFile) : null
+        const epNfo     = epNfoPath ? await parseNfo(epNfoPath).catch(() => ({})) : {}
+
+        onItem?.(filePath)
+        log.info(`[scan] Episode (flat) S${String(seasonNumber).padStart(2,'0')}E${String(episodeNumber).padStart(2,'0')} — ${epFile}`)
+
+        let fileInfo = null
+        try {
+          fileInfo = await probeFile(db, filePath)
+          if (!fileInfo) log.warn(`[scan] Probe returned null for ${epFile}`)
+        } catch (err) {
+          log.warn(`[scan] Probe failed for ${epFile}: ${err.message}`)
+        }
+
+        const epMetadata = {
+          ...epNfo,
+          ...(fileInfo?.subtitle_streams ? { subtitle_streams: fileInfo.subtitle_streams } : {}),
+        }
+
+        await db.query(`
+          INSERT INTO episodes(
+            series_id, season_number, episode_number, title, plot, file_path, nfo_path,
+            duration_secs, video_codec, audio_codec, container, file_size, width, height, bitrate_kbps,
+            metadata
+          )
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+          ON CONFLICT DO NOTHING
+        `, [
+          seriesId, seasonNumber, episodeNumber,
+          epNfo.title ?? null, epNfo.plot ?? null, filePath, epNfoPath,
+          fileInfo?.duration_secs ?? null, fileInfo?.video?.codec ?? null,
+          fileInfo?.audio?.codec ?? null,  fileInfo?.container ?? null,
+          fileInfo?.file_size ?? null,     fileInfo?.video?.width ?? null,
+          fileInfo?.video?.height ?? null, fileInfo?.bitrate_kbps ?? null,
+          JSON.stringify(epMetadata),
+        ])
+      }
+    }
   }
 
   log.info(`[scan] TV path done — ${itemsAdded.length} new series from ${rootPath}`)
@@ -597,4 +678,25 @@ function guessTitle(filePath) {
 function guessYear(filePath) {
   const match = filePath.match(/\((\d{4})\)/)
   return match ? parseInt(match[1]) : null
+}
+
+/**
+ * Parse a season number from a folder name. Handles the naming conventions
+ * used by common media managers (Sonarr, Kodi, Plex, Jellyfin):
+ *   "Season 1"  "Season01"  "season_2"   → 1, 1, 2
+ *   "S01"  "S1"  "s02"                   → 1, 1, 2
+ *   "1"  "01"                            → 1, 1
+ * Returns 0 for anything that doesn't match (treated as "unknown season").
+ */
+function parseSeasonNumber(folderName) {
+  // "Season 1", "Season01", "season_2", "Saison 1", "Staffel 1"
+  let m = folderName.match(/(?:season|saison|staffel|serie)[_\s-]*(\d+)/i)
+  if (m) return parseInt(m[1])
+  // "S01", "S1", "S 01" (standalone — not part of an episode code like S01E01)
+  m = folderName.match(/^s(\d{1,2})$/i)
+  if (m) return parseInt(m[1])
+  // Bare number: "1", "01"
+  m = folderName.match(/^(\d{1,2})$/)
+  if (m) return parseInt(m[1])
+  return 0
 }
