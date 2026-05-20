@@ -59,7 +59,7 @@ export default function MovieDetail() {
           <button className="ghost" onClick={() => setPlaying(null)}>&#8592; Back</button>
           <span className={styles.playerTitle}>{playing.title}</span>
         </div>
-        <div style={{ flex: 1, height: 0 }}>
+        <div style={{ flex: 1, minHeight: 0 }}>
           <Player
             key={playing.episodeId ?? playing.mediaItemId}
             mediaItemId={playing.mediaItemId}

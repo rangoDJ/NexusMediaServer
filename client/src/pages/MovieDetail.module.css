@@ -358,12 +358,9 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 12px 20px;
-  background: rgba(0, 0, 0, 0.7);
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  padding: 10px 20px;
+  background: rgba(0, 0, 0, 0.85);
+  flex-shrink: 0; /* flex item — stays at its natural height, gives remaining space to the player */
   z-index: 201;
 }
 

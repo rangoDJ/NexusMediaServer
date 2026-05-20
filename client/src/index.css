@@ -36,7 +36,12 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
 }
 
-button {
+/* Base reset applied to all buttons EXCEPT Vidstack's internal controls.
+ * Vidstack renders its player buttons in the light DOM (not shadow DOM), so
+ * a bare `button { padding: … }` rule bleeds into the player and corrupts
+ * the controls bar layout, hiding the seek bar. The :where(:not(media-player *))
+ * guard keeps these defaults away from anything inside <media-player>. */
+button:where(:not(media-player *)) {
   cursor: pointer;
   font: inherit;
   border: none;
