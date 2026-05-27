@@ -7,13 +7,18 @@ export default async function searchRoutes(app) {
     const q = (request.query.q ?? '').trim()
     if (q.length < 2) return { movies: [], series: [], episodes: [], people: [] }
 
-    const pattern = `%${q}%`
+    // Escape LIKE special characters so a search for "50%" or "file_name"
+    // matches literally instead of "everything" or "any single character".
+    // Using '!' as the escape char avoids backslash/standard_conforming_strings
+    // ambiguity in PostgreSQL.
+    const escaped = q.replace(/[!%_]/g, '!$&')
+    const pattern = `%${escaped}%`
 
     // Movies + series share the media_items table; split by type after the fetch.
     const mediaQ = await app.db.query(
       `SELECT id, type, title, year, poster_url, rating, duration_secs, genres
        FROM media_items
-       WHERE title ILIKE $1
+       WHERE title ILIKE $1 ESCAPE '!'
        ORDER BY type, sort_title NULLS LAST, title
        LIMIT 60`,
       [pattern]
@@ -26,7 +31,7 @@ export default async function searchRoutes(app) {
               m.id AS series_id, m.title AS series_title, m.poster_url
        FROM episodes e
        JOIN media_items m ON m.id = e.series_id
-       WHERE e.title ILIKE $1
+       WHERE e.title ILIKE $1 ESCAPE '!'
        ORDER BY m.title, e.season_number, e.episode_number
        LIMIT 30`,
       [pattern]
@@ -41,7 +46,7 @@ export default async function searchRoutes(app) {
               name,
               profile_url
        FROM media_cast
-       WHERE name ILIKE $1
+       WHERE name ILIKE $1 ESCAPE '!'
        ORDER BY person_id, name
        LIMIT 30`,
       [pattern]

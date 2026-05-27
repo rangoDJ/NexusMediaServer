@@ -16,22 +16,46 @@ function pad(n) { return String(n).padStart(2, '0') }
 export default function MovieDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [item, setItem]           = useState(null)
-  const [playing, setPlaying]     = useState(null) // { episodeId?, mediaItemId?, title }
-  const [openSeason, setOpenSeason] = useState(null)
-  const [error, setError]         = useState(null)
+  const user = JSON.parse(localStorage.getItem('nexus_user') || '{}')
+
+  const [item, setItem]               = useState(null)
+  const [playing, setPlaying]         = useState(null)
+  const [openSeason, setOpenSeason]   = useState(null)
+  const [error, setError]             = useState(null)
+  const [isFavorite, setIsFavorite]   = useState(false)
+  const [showRematch, setShowRematch] = useState(false)
 
   useEffect(() => {
-    api.get(`/media/${id}`)
-      .then(r => {
-        setItem(r.data)
-        // Default to first season open for series
-        if (r.data.type === 'series' && r.data.episodes?.length) {
-          setOpenSeason(r.data.episodes[0].season_number)
-        }
-      })
-      .catch(() => setError('Could not load this title.'))
+    Promise.all([
+      api.get(`/media/${id}`),
+      api.get(`/media/${id}/favorite`).catch(() => ({ data: { is_favorite: false } })),
+    ]).then(([mediaRes, favRes]) => {
+      setItem(mediaRes.data)
+      setIsFavorite(favRes.data.is_favorite)
+      if (mediaRes.data.type === 'series' && mediaRes.data.episodes?.length) {
+        setOpenSeason(mediaRes.data.episodes[0].season_number)
+      }
+    }).catch(() => setError('Could not load this title.'))
   }, [id])
+
+  async function toggleFavorite() {
+    try {
+      if (isFavorite) {
+        await api.delete(`/media/${id}/favorite`)
+        setIsFavorite(false)
+      } else {
+        await api.post(`/media/${id}/favorite`)
+        setIsFavorite(true)
+      }
+    } catch {
+      // ignore — UI stays in sync with last known state
+    }
+  }
+
+  function handleRematchDone(updated) {
+    setItem(prev => ({ ...prev, ...updated }))
+    setShowRematch(false)
+  }
 
   // When an episode finishes, auto-advance to the next one in the series
   // (next episode this season, else first episode of the next season).
@@ -155,13 +179,37 @@ export default function MovieDetail() {
                 </tbody>
               </table>
 
-              {item.type !== 'series' && (
+              <div className={styles.actionRow}>
+                {item.type !== 'series' && (
+                  <button
+                    className={`primary ${styles.playBtn}`}
+                    onClick={() => setPlaying({ mediaItemId: item.id, title: item.title })}
+                  >
+                    ▶ Play
+                  </button>
+                )}
                 <button
-                  className={`primary ${styles.playBtn}`}
-                  onClick={() => setPlaying({ mediaItemId: item.id, title: item.title })}
+                  className={`${styles.favoriteBtn} ${isFavorite ? styles.favoriteBtnActive : ''}`}
+                  onClick={toggleFavorite}
+                  title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
                 >
-                  ▶ Play
+                  {isFavorite ? '★' : '☆'}
                 </button>
+                {user.role === 'admin' && (
+                  <button
+                    className={styles.rematchBtn}
+                    onClick={() => setShowRematch(true)}
+                  >
+                    Fix Match
+                  </button>
+                )}
+              </div>
+              {showRematch && (
+                <RematchDialog
+                  item={item}
+                  onDone={handleRematchDone}
+                  onClose={() => setShowRematch(false)}
+                />
               )}
             </div>
           </div>
@@ -241,6 +289,90 @@ export default function MovieDetail() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function RematchDialog({ item, onDone, onClose }) {
+  const [query, setQuery]       = useState(item.title)
+  const [results, setResults]   = useState([])
+  const [loading, setLoading]   = useState(false)
+  const [applying, setApplying] = useState(null)
+  const [error, setError]       = useState(null)
+
+  async function search(e) {
+    e.preventDefault()
+    if (!query.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      const r = await api.get(`/media/${item.id}/rematch`, { params: { query: query.trim() } })
+      setResults(r.data)
+    } catch {
+      setError('Search failed — check your TMDB API key.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function applyMatch(tmdbId) {
+    setApplying(tmdbId)
+    setError(null)
+    try {
+      const r = await api.post(`/media/${item.id}/rematch`, { tmdb_id: tmdbId })
+      onDone(r.data)
+    } catch {
+      setError('Could not apply match — try again.')
+      setApplying(null)
+    }
+  }
+
+  return (
+    <div className={styles.rematchOverlay} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className={styles.rematchDialog}>
+        <div className={styles.rematchHeader}>
+          <h3>Fix Match — {item.title}</h3>
+          <button className="ghost" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={search} className={styles.rematchSearch}>
+          <input
+            className={styles.rematchInput}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search TMDB…"
+            autoFocus
+          />
+          <button className="primary" type="submit" disabled={loading}>
+            {loading ? '…' : 'Search'}
+          </button>
+        </form>
+        {error && <p className={styles.rematchError}>{error}</p>}
+        {results.length > 0 && (
+          <div className={styles.rematchGrid}>
+            {results.map(r => (
+              <button
+                key={r.tmdb_id}
+                className={styles.rematchCard}
+                onClick={() => applyMatch(r.tmdb_id)}
+                disabled={applying !== null}
+              >
+                <div className={styles.rematchPoster}>
+                  {r.poster_url
+                    ? <img src={r.poster_url} alt={r.title} loading="lazy" />
+                    : <div className={styles.rematchPosterPlaceholder}>{r.title[0]}</div>
+                  }
+                  {applying === r.tmdb_id && (
+                    <div className={styles.rematchApplying}>Applying…</div>
+                  )}
+                </div>
+                <p className={styles.rematchTitle}>{r.title}</p>
+                {r.year && <p className={styles.rematchYear}>{r.year}</p>}
+                {r.rating > 0 && <p className={styles.rematchRating}>★ {Number(r.rating).toFixed(1)}</p>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -547,6 +547,17 @@ async function resolveFilePath(db, mediaItemId, episodeId, reply) {
 }
 
 async function proxySegment(app, request, reply, pathParts) {
+  // Validate all path parts before forwarding to prevent path traversal attacks.
+  // Segments must be plain filenames like "segment_00001.ts"; variants must be
+  // "v0", "v1", etc. Any "../" or unusual characters are rejected here.
+  const segment = pathParts[pathParts.length - 1]
+  if (!/^[a-zA-Z0-9_-]+\.ts$/.test(segment)) {
+    return reply.code(400).send({ error: 'Invalid segment name' })
+  }
+  if (pathParts.length > 1 && !/^v\d+$/.test(pathParts[0])) {
+    return reply.code(400).send({ error: 'Invalid variant identifier' })
+  }
+
   const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
   if (!session) return
   try {

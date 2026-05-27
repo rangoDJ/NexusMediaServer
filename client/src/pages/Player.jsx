@@ -39,6 +39,12 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   const lastSaveRef            = useRef(0)
   const resumeFromRef          = useRef(0)
   const menuRef                = useRef(null)
+  // Trickplay thumbnail URL (WebVTT) — null when not available
+  const [trickplayUrl, setTrickplayUrl] = useState(null)
+  // Intro/credits segment windows for this episode
+  const [segments, setSegments] = useState([])
+  // Whether the "Skip Intro" button is visible
+  const [showSkipIntro, setShowSkipIntro] = useState(false)
   // Tracks the src object currently given to <MediaPlayer>. Used to detect
   // whether a stream is already playing when a quality change is requested so
   // we can show a switching overlay instead of blanking the screen.
@@ -76,6 +82,32 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   const progressPath = episodeId
     ? `/media/episode/${episodeId}/progress`
     : `/media/${mediaItemId}/progress`
+
+  // Load trickplay VTT and (for episodes) intro segments when item changes
+  useEffect(() => {
+    const token = localStorage.getItem('nexus_token')
+    const base = episodeId
+      ? `/api/v1/media/episode/${episodeId}`
+      : `/api/v1/media/${mediaItemId}`
+
+    // Trickplay: check if available, build authenticated URL
+    fetch(`${base}/trickplay.vtt?token=${encodeURIComponent(token)}`, { method: 'HEAD' })
+      .then(r => {
+        if (r.ok) setTrickplayUrl(`${base}/trickplay.vtt?token=${encodeURIComponent(token)}`)
+        else setTrickplayUrl(null)
+      })
+      .catch(() => setTrickplayUrl(null))
+
+    // Segments: only for episodes
+    if (episodeId) {
+      api.get(`/media/episode/${episodeId}/segments`)
+        .then(r => setSegments(r.data ?? []))
+        .catch(() => setSegments([]))
+    } else {
+      setSegments([])
+    }
+    setShowSkipIntro(false)
+  }, [mediaItemId, episodeId])
 
   // Start / restart playback.
   // - quality === 'auto'  → prefer direct play, fall back to transcoded HLS
@@ -353,6 +385,12 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
       lastSaveRef.current = now
       saveProgress()
     }
+    // Drive Skip Intro button visibility
+    const absoluteTime = currentStreamOffsetRef.current + (playerRef.current?.currentTime ?? 0)
+    const introSeg = segments.find(s => s.type === 'intro')
+    if (introSeg) {
+      setShowSkipIntro(absoluteTime >= introSeg.start_secs && absoluteTime < introSeg.end_secs)
+    }
   }
 
   // Surface hls.js / native player errors as a visible message instead of
@@ -575,6 +613,22 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         </div>
       )}
 
+      {/* Skip Intro button — shown when playback is inside the intro window */}
+      {showSkipIntro && src && (
+        <button
+          className={styles.skipIntroBtn}
+          onClick={() => {
+            const introSeg = segments.find(s => s.type === 'intro')
+            const player = playerRef.current
+            if (!player || !introSeg) return
+            player.currentTime = introSeg.end_secs - currentStreamOffsetRef.current
+            setShowSkipIntro(false)
+          }}
+        >
+          Skip Intro
+        </button>
+      )}
+
       {src && (
         <MediaPlayer
           ref={playerRef}
@@ -583,6 +637,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           autoPlay
           crossOrigin
           playsInline
+          thumbnails={trickplayUrl ?? undefined}
           onProviderChange={onProviderChange}
           onCanPlay={onCanPlay}
           onTimeUpdate={onTimeUpdate}

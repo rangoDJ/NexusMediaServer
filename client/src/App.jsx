@@ -12,6 +12,8 @@ import Person from './pages/Person.jsx'
 import LibraryDetail from './pages/LibraryDetail.jsx'
 import Libraries from './pages/Libraries.jsx'
 import Layout from './components/Layout.jsx'
+import Collections from './pages/Collections.jsx'
+import CollectionDetail from './pages/CollectionDetail.jsx'
 
 function useAuth() {
   return !!localStorage.getItem('nexus_token')
@@ -64,6 +66,8 @@ export default function App() {
       <Route path="/library/:id" element={<RequireAuth><LibraryDetail /></RequireAuth>} />
       <Route path="/search" element={<RequireAuth><Search /></RequireAuth>} />
       <Route path="/person/:tmdbId" element={<RequireAuth><Person /></RequireAuth>} />
+      <Route path="/collections"    element={<RequireAuth><Collections /></RequireAuth>} />
+      <Route path="/collections/:id" element={<RequireAuth><CollectionDetail /></RequireAuth>} />
       <Route path="/settings" element={<RequireAdmin><Settings /></RequireAdmin>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

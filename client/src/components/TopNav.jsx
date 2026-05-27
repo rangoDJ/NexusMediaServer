@@ -59,6 +59,12 @@ export default function TopNav() {
           Libraries
         </NavLink>
 
+        <NavLink to="/collections" className={({ isActive }) =>
+          `${styles.navLink} ${isActive ? styles.active : ''}`
+        }>
+          Collections
+        </NavLink>
+
         {libraries.length > 0 && (
           <div className={styles.libsWrap} ref={libsRef}>
             <button

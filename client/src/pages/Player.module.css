@@ -260,3 +260,27 @@
   color: var(--accent);
   opacity: 0.7;
 }
+
+/* ── Skip Intro button ───────────────────────────────────────────────── */
+.skipIntroBtn {
+  position: absolute;
+  bottom: 80px;
+  right: 24px;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 10px 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.skipIntroBtn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.6);
+}

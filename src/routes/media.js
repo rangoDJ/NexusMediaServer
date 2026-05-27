@@ -1,8 +1,9 @@
 import axios from 'axios'
 import { createReadStream } from 'fs'
 import { stat } from 'fs/promises'
-import { extname } from 'path'
+import { extname, dirname, join } from 'path'
 import { pickTranscoder } from '../services/transcoderPool.js'
+import { fetchMovieById, fetchSeriesById, searchTmdb } from '../services/tmdb.js'
 
 // Codecs natively supported for direct play in common mobile/browser environments.
 // Mobile apps pass their own list via ?client_codecs= to get an accurate answer.
@@ -42,8 +43,9 @@ export default async function mediaRoutes(app) {
   // List media (paginated). Supports filtering and sorting for the home page rows.
   // sort = alphabetical | recently_added | random | year_desc | rating
   app.get('/', async (request) => {
-    const { library_id, type, search, genre, sort = 'alphabetical', page = 1, limit = 50 } = request.query
-    const offset = (page - 1) * limit
+    const { library_id, type, search, genre, sort = 'alphabetical', page = 1 } = request.query
+    const limit  = Math.min(parseInt(request.query.limit ?? '50', 10) || 50, 200)
+    const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit
     const params = []
     const conditions = []
 
@@ -107,6 +109,62 @@ export default async function mediaRoutes(app) {
       LIMIT 20
     `, [request.user.sub])
     return rows
+  })
+
+  // Items the current user has starred, newest first
+  app.get('/favorites', async (request) => {
+    const { rows } = await app.db.query(`
+      SELECT m.id, m.type, m.title, m.year, m.poster_url, m.backdrop_url,
+             m.duration_secs, m.metadata, uf.created_at AS favorited_at
+      FROM user_favorites uf
+      JOIN media_items m ON m.id = uf.media_item_id
+      WHERE uf.user_id = $1
+      ORDER BY uf.created_at DESC
+      LIMIT 50
+    `, [request.user.sub])
+    return rows.map(r => {
+      applyLocalArtwork(r)
+      delete r.metadata
+      return r
+    })
+  })
+
+  // Next unwatched episode for each series the user has started, newest first
+  app.get('/next-up', async (request) => {
+    const { rows } = await app.db.query(`
+      WITH last_watched_order AS (
+        SELECT e.series_id,
+          MAX(e.season_number * 1000 + e.episode_number) AS max_order
+        FROM watch_progress wp
+        JOIN episodes e ON e.id = wp.episode_id
+        WHERE wp.user_id = $1 AND (wp.completed = true OR wp.position_secs > 30)
+        GROUP BY e.series_id
+      )
+      SELECT DISTINCT ON (e.series_id)
+        m.id            AS series_id,
+        m.title         AS series_title,
+        m.poster_url,
+        m.metadata,
+        e.id            AS episode_id,
+        e.season_number,
+        e.episode_number,
+        e.title         AS episode_title,
+        e.duration_secs,
+        COALESCE(wp.position_secs, 0) AS position_secs
+      FROM last_watched_order lwo
+      JOIN episodes e ON e.series_id = lwo.series_id
+        AND (e.season_number * 1000 + e.episode_number) >= lwo.max_order
+      JOIN media_items m ON m.id = e.series_id
+      LEFT JOIN watch_progress wp ON wp.episode_id = e.id AND wp.user_id = $1
+      WHERE COALESCE(wp.completed, false) = false
+      ORDER BY e.series_id, e.season_number, e.episode_number
+      LIMIT 20
+    `, [request.user.sub])
+    return rows.map(r => {
+      applyLocalArtwork(r)
+      delete r.metadata
+      return r
+    })
   })
 
   // Single media item with full metadata
@@ -298,6 +356,180 @@ export default async function mediaRoutes(app) {
     `, [request.user.sub, request.params.episodeId, position_secs, duration_secs, completed ?? false])
     return reply.code(204).send()
   })
+
+  // ── Favorites ────────────────────────────────────────────────────────────────
+
+  app.get('/:id/favorite', async (request) => {
+    const { rows } = await app.db.query(
+      'SELECT 1 FROM user_favorites WHERE user_id=$1 AND media_item_id=$2',
+      [request.user.sub, request.params.id]
+    )
+    return { is_favorite: rows.length > 0 }
+  })
+
+  app.post('/:id/favorite', async (request, reply) => {
+    await app.db.query(`
+      INSERT INTO user_favorites(user_id, media_item_id) VALUES($1,$2)
+      ON CONFLICT DO NOTHING
+    `, [request.user.sub, request.params.id])
+    return reply.code(204).send()
+  })
+
+  app.delete('/:id/favorite', async (request, reply) => {
+    await app.db.query(
+      'DELETE FROM user_favorites WHERE user_id=$1 AND media_item_id=$2',
+      [request.user.sub, request.params.id]
+    )
+    return reply.code(204).send()
+  })
+
+  // ── Manual re-identification ──────────────────────────────────────────────────
+
+  // Search TMDB for alternative matches (admin only)
+  app.get('/:id/rematch', async (request, reply) => {
+    if (request.user.role !== 'admin') return reply.code(403).send({ error: 'Forbidden' })
+    const { query } = request.query
+    if (!query?.trim()) return reply.code(400).send({ error: 'query is required' })
+
+    const { rows } = await app.db.query('SELECT type FROM media_items WHERE id=$1', [request.params.id])
+    if (!rows.length) return reply.code(404).send({ error: 'Not found' })
+
+    const tmdbType = rows[0].type === 'series' ? 'tv' : 'movie'
+    try {
+      return await searchTmdb(query.trim(), tmdbType)
+    } catch (err) {
+      app.log.warn(err, 'TMDB rematch search failed')
+      return reply.code(502).send({ error: 'TMDB search failed' })
+    }
+  })
+
+  // Apply a chosen TMDB match — force-overwrites all metadata (admin only)
+  app.post('/:id/rematch', async (request, reply) => {
+    if (request.user.role !== 'admin') return reply.code(403).send({ error: 'Forbidden' })
+    const { tmdb_id } = request.body ?? {}
+    if (!tmdb_id) return reply.code(400).send({ error: 'tmdb_id is required' })
+
+    const { rows } = await app.db.query('SELECT * FROM media_items WHERE id=$1', [request.params.id])
+    if (!rows.length) return reply.code(404).send({ error: 'Not found' })
+    const item = rows[0]
+
+    let meta
+    try {
+      meta = item.type === 'series'
+        ? await fetchSeriesById(String(tmdb_id))
+        : await fetchMovieById(String(tmdb_id))
+    } catch (err) {
+      app.log.warn(err, 'TMDB rematch fetch failed')
+      return reply.code(502).send({ error: 'TMDB fetch failed' })
+    }
+    if (!meta.tmdb_id) return reply.code(502).send({ error: 'TMDB returned no data for that id' })
+
+    const metaUpdate = {}
+    if (meta.tagline) metaUpdate.tagline = meta.tagline
+    if (meta.director) metaUpdate.director = meta.director
+    if (meta.writer)   metaUpdate.writer   = meta.writer
+    if (meta.cast)     metaUpdate.cast     = meta.cast
+    if (meta.studios)  metaUpdate.studios  = meta.studios
+
+    await app.db.query(`
+      UPDATE media_items
+      SET tmdb_id=$1, imdb_id=$2, title=$3, sort_title=$4, year=$5, plot=$6,
+          tagline=$7, rating=$8, genres=$9, poster_url=$10, backdrop_url=$11,
+          metadata=metadata || $12::jsonb, updated_at=now()
+      WHERE id=$13
+    `, [
+      meta.tmdb_id,
+      meta.imdb_id ?? item.imdb_id,
+      meta.title,
+      meta.sort_title ?? meta.title,
+      meta.year ?? item.year,
+      meta.plot ?? item.plot,
+      meta.tagline ?? item.tagline,
+      meta.rating ?? item.rating,
+      meta.genres ?? item.genres,
+      meta.poster_url ?? item.poster_url,
+      meta.backdrop_url ?? item.backdrop_url,
+      JSON.stringify(metaUpdate),
+      item.id,
+    ])
+
+    const { rows: updated } = await app.db.query('SELECT * FROM media_items WHERE id=$1', [item.id])
+    return updated[0]
+  })
+
+  // ── Trickplay ────────────────────────────────────────────────────────────────
+  // WebVTT and JPEG sprite sheet for seek-bar thumbnail previews.
+  // Accept token via query param so the Vidstack thumbnails prop can use
+  // a plain URL without custom headers.
+
+  app.get('/:id/trickplay.vtt', { config: { public: false } }, async (request, reply) => {
+    const { rows } = await app.db.query(
+      'SELECT trickplay_path FROM media_items WHERE id=$1', [request.params.id]
+    )
+    if (!rows.length || !rows[0].trickplay_path) {
+      return reply.code(404).send({ error: 'No trickplay available' })
+    }
+    return serveTrickplayFile(reply, rows[0].trickplay_path, 'text/vtt; charset=utf-8')
+  })
+
+  // Sprite sheet image is public — Vidstack resolves it as a relative URL from
+  // the VTT and cannot add auth headers for image requests.
+  app.get('/:id/trickplay.jpg', { config: { public: true } }, async (request, reply) => {
+    const { rows } = await app.db.query(
+      'SELECT trickplay_path FROM media_items WHERE id=$1', [request.params.id]
+    )
+    if (!rows.length || !rows[0].trickplay_path) {
+      return reply.code(404).send({ error: 'No trickplay available' })
+    }
+    const spritePath = join(dirname(rows[0].trickplay_path), 'trickplay.jpg')
+    return serveTrickplayFile(reply, spritePath, 'image/jpeg')
+  })
+
+  app.get('/episode/:id/trickplay.vtt', { config: { public: false } }, async (request, reply) => {
+    const { rows } = await app.db.query(
+      'SELECT trickplay_path FROM episodes WHERE id=$1', [request.params.id]
+    )
+    if (!rows.length || !rows[0].trickplay_path) {
+      return reply.code(404).send({ error: 'No trickplay available' })
+    }
+    return serveTrickplayFile(reply, rows[0].trickplay_path, 'text/vtt; charset=utf-8')
+  })
+
+  app.get('/episode/:id/trickplay.jpg', { config: { public: true } }, async (request, reply) => {
+    const { rows } = await app.db.query(
+      'SELECT trickplay_path FROM episodes WHERE id=$1', [request.params.id]
+    )
+    if (!rows.length || !rows[0].trickplay_path) {
+      return reply.code(404).send({ error: 'No trickplay available' })
+    }
+    const spritePath = join(dirname(rows[0].trickplay_path), 'trickplay.jpg')
+    return serveTrickplayFile(reply, spritePath, 'image/jpeg')
+  })
+
+  // ── Intro / credits segments ─────────────────────────────────────────────────
+  app.get('/episode/:id/segments', async (request, reply) => {
+    const { rows } = await app.db.query(
+      `SELECT id, type, start_secs, end_secs
+       FROM media_segments WHERE episode_id=$1 ORDER BY start_secs`,
+      [request.params.id]
+    )
+    return rows
+  })
+}
+
+// Serve a trickplay file (VTT or JPEG) directly from the filesystem.
+async function serveTrickplayFile(reply, filePath, contentType) {
+  try {
+    const st = await stat(filePath)
+    reply.headers({
+      'Content-Type':   contentType,
+      'Content-Length': st.size,
+      'Cache-Control':  'private, max-age=604800',
+    })
+    return reply.send(createReadStream(filePath))
+  } catch {
+    return reply.code(404).send({ error: 'Trickplay file not found on disk' })
+  }
 }
 
 // Proxy a single subtitle track from a transcoder node back to the client

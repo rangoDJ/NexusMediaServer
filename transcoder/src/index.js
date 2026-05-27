@@ -3,6 +3,8 @@ import axios from 'axios'
 import sessionRoutes from './routes/sessions.js'
 import probeRoutes from './routes/probe.js'
 import subtitleRoutes from './routes/subtitles.js'
+import trickplayRoutes from './routes/trickplay.js'
+import analyzeRoutes from './routes/analyze.js'
 import { startIdleJanitor, stopIdleJanitor, stopAllSessionsGracefully } from './services/transcoder.js'
 
 const app = Fastify({ logger: true })
@@ -10,13 +12,15 @@ const app = Fastify({ logger: true })
 // All requests must carry the shared secret
 app.addHook('onRequest', async (request, reply) => {
   if (request.headers['x-transcoder-secret'] !== process.env.TRANSCODER_SECRET) {
-    reply.code(401).send({ error: 'Unauthorized' })
+    return reply.code(401).send({ error: 'Unauthorized' })
   }
 })
 
-await app.register(sessionRoutes, { prefix: '/session' })
-await app.register(probeRoutes, { prefix: '/probe' })
+await app.register(sessionRoutes,  { prefix: '/session' })
+await app.register(probeRoutes,    { prefix: '/probe' })
 await app.register(subtitleRoutes, { prefix: '/subtitle' })
+await app.register(trickplayRoutes, { prefix: '/trickplay' })
+await app.register(analyzeRoutes,   { prefix: '/analyze' })
 
 app.get('/health', async () => {
   const { sessionStore } = await import('./services/sessionStore.js')

@@ -3,6 +3,8 @@ import axios from 'axios'
 import { requireAdmin } from '../middleware/auth.js'
 import { scanLibrary } from '../services/scanner.js'
 
+const VALID_LIBRARY_TYPES = new Set(['movies', 'series', 'tv'])
+
 export default async function libraryRoutes(app) {
   app.addHook('preHandler', app.authenticate)
 
@@ -22,9 +24,18 @@ export default async function libraryRoutes(app) {
 
   app.post('/', { preHandler: requireAdmin }, async (request, reply) => {
     const { name, type, paths } = request.body
+    if (!name?.trim()) {
+      return reply.code(400).send({ error: 'name is required' })
+    }
+    if (!VALID_LIBRARY_TYPES.has(type)) {
+      return reply.code(400).send({ error: `type must be one of: ${[...VALID_LIBRARY_TYPES].join(', ')}` })
+    }
+    if (!Array.isArray(paths) || paths.length === 0 || !paths.every(p => typeof p === 'string' && p.trim())) {
+      return reply.code(400).send({ error: 'paths must be a non-empty array of strings' })
+    }
     const { rows } = await app.db.query(
       'INSERT INTO libraries(name, type, paths) VALUES($1,$2,$3) RETURNING *',
-      [name, type, paths]
+      [name.trim(), type, paths.map(p => p.trim())]
     )
     // Start watching the new library's paths immediately
     app.directoryWatcher?.refreshLibrary(rows[0].id).catch(err =>
@@ -36,6 +47,14 @@ export default async function libraryRoutes(app) {
   // Update library name / paths. Rebuilds the directory watcher when paths change.
   app.put('/:id', { preHandler: requireAdmin }, async (request, reply) => {
     const { name, paths } = request.body
+    if (name !== undefined && !name?.trim()) {
+      return reply.code(400).send({ error: 'name must be a non-empty string' })
+    }
+    if (paths !== undefined) {
+      if (!Array.isArray(paths) || paths.length === 0 || !paths.every(p => typeof p === 'string' && p.trim())) {
+        return reply.code(400).send({ error: 'paths must be a non-empty array of strings' })
+      }
+    }
     const { rows } = await app.db.query(
       `UPDATE libraries SET name=COALESCE($1,name), paths=COALESCE($2,paths)
        WHERE id=$3 RETURNING *`,

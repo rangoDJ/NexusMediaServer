@@ -5,9 +5,13 @@ import styles from './Home.module.css'
 
 const POPULAR_GENRES = ['Action', 'Comedy', 'Drama', 'Sci-Fi', 'Horror', 'Thriller', 'Animation', 'Documentary']
 
+function pad(n) { return String(n).padStart(2, '0') }
+
 export default function Home() {
   const [libraries, setLibraries]             = useState([])
   const [continueWatching, setContinueWatching] = useState([])
+  const [nextUp, setNextUp]                   = useState([])
+  const [favorites, setFavorites]             = useState([])
   const [recentByLibrary, setRecentByLibrary] = useState({})
   const [randomByLibrary, setRandomByLibrary] = useState({})
   const [genres, setGenres]                   = useState([])
@@ -21,16 +25,20 @@ export default function Home() {
 
     async function load() {
       try {
-        const [libsRes, cwRes, genresRes] = await Promise.all([
+        const [libsRes, cwRes, genresRes, nextUpRes, favRes] = await Promise.all([
           api.get('/libraries'),
           api.get('/media/continue-watching').catch(() => ({ data: [] })),
           api.get('/media/genres').catch(() => ({ data: [] })),
+          api.get('/media/next-up').catch(() => ({ data: [] })),
+          api.get('/media/favorites').catch(() => ({ data: [] })),
         ])
         if (cancelled) return
 
         const libs = libsRes.data
         setLibraries(libs)
         setContinueWatching(cwRes.data)
+        setNextUp(nextUpRes.data)
+        setFavorites(favRes.data)
 
         // Pick the most popular genres that actually exist in this library
         const presentPopular = POPULAR_GENRES.filter(g => genresRes.data.includes(g)).slice(0, 4)
@@ -77,11 +85,23 @@ export default function Home() {
 
   return (
     <main className={styles.main}>
+      {nextUp.length > 0 && (
+        <Section title="Next Up">
+          {nextUp.map(item => <NextUpCard key={item.episode_id} item={item} />)}
+        </Section>
+      )}
+
       {continueWatching.length > 0 && (
         <Section title="Continue Watching">
           {continueWatching.map(item => (
             <MediaCard key={item.id} item={item} showProgress />
           ))}
+        </Section>
+      )}
+
+      {favorites.length > 0 && (
+        <Section title="My Favorites">
+          {favorites.map(item => <MediaCard key={item.id} item={item} />)}
         </Section>
       )}
 
@@ -164,6 +184,37 @@ function MediaCard({ item, showProgress }) {
       </div>
       <p className={styles.cardTitle}>{item.title}</p>
       {item.year && <p className={styles.cardSub}>{item.year}</p>}
+    </button>
+  )
+}
+
+function NextUpCard({ item }) {
+  const navigate = useNavigate()
+  const pct = item.duration_secs > 0
+    ? Math.min(100, Math.round((item.position_secs / item.duration_secs) * 100))
+    : 0
+  const label = `S${pad(item.season_number)}E${pad(item.episode_number)}`
+
+  return (
+    <button
+      className={styles.card}
+      onClick={() => navigate(`/movie/${item.series_id}`)}
+      title={`${item.series_title} · ${label}`}
+    >
+      <div className={styles.poster}>
+        {item.poster_url
+          ? <img src={item.poster_url} alt={item.series_title} loading="lazy" />
+          : <div className={styles.posterPlaceholder}>{item.series_title[0]?.toUpperCase()}</div>
+        }
+        {pct > 0 && (
+          <div className={styles.progressBar}>
+            <div className={styles.progressFill} style={{ width: `${pct}%` }} />
+          </div>
+        )}
+        <div className={styles.seriesBadge}>{label}</div>
+      </div>
+      <p className={styles.cardTitle}>{item.series_title}</p>
+      <p className={styles.cardSub}>{item.episode_title ?? label}</p>
     </button>
   )
 }

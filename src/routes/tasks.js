@@ -77,8 +77,8 @@ export default async function taskRoutes(app) {
       if (t.type === 'interval' && typeof t.intervalMs !== 'number') {
         return reply.code(400).send({ error: 'interval trigger requires intervalMs (number)' })
       }
-      if (t.type === 'daily' && !/^\d{2}:\d{2}$/.test(t.timeOfDay ?? '')) {
-        return reply.code(400).send({ error: 'daily trigger requires timeOfDay in HH:MM format' })
+      if (t.type === 'daily' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(t.timeOfDay ?? '')) {
+        return reply.code(400).send({ error: 'daily trigger requires timeOfDay in HH:MM format (00:00–23:59)' })
       }
     }
 
@@ -91,7 +91,7 @@ export default async function taskRoutes(app) {
     const task = await app.scheduler.getById(request.params.id)
     if (!task) return reply.code(404).send({ error: 'Task not found' })
 
-    const limit = Math.min(parseInt(request.query.limit ?? '20', 10), 100)
+    const limit = Math.min(parseInt(request.query.limit ?? '20', 10) || 20, 100)
     return app.scheduler.getHistory(request.params.id, limit)
   })
 }

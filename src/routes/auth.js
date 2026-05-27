@@ -20,13 +20,14 @@ async function issueTokens(app, db, user, { device_name, device_type, ip_address
   )
 
   const refreshToken = generateRefreshToken()
-  const tokenHash = await bcrypt.hash(refreshToken, 10)
-  const expiresAt = new Date(Date.now() + sessionDays * 86_400_000)
+  const tokenPrefix  = refreshToken.slice(0, 16)
+  const tokenHash    = await bcrypt.hash(refreshToken, 10)
+  const expiresAt    = new Date(Date.now() + sessionDays * 86_400_000)
 
   await db.query(`
-    INSERT INTO refresh_tokens(user_id, token_hash, device_name, device_type, ip_address, user_agent, expires_at)
-    VALUES($1,$2,$3,$4,$5,$6,$7)
-  `, [user.id, tokenHash, device_name ?? null, device_type ?? null, ip_address ?? null, user_agent ?? null, expiresAt])
+    INSERT INTO refresh_tokens(user_id, token_hash, token_prefix, device_name, device_type, ip_address, user_agent, expires_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+  `, [user.id, tokenHash, tokenPrefix, device_name ?? null, device_type ?? null, ip_address ?? null, user_agent ?? null, expiresAt])
 
   return { access_token: accessToken, refresh_token: refreshToken }
 }
@@ -59,6 +60,18 @@ export default async function authRoutes(app) {
       [username, email, password_hash, role]
     )
     const user = rows[0]
+
+    // Post-insert race guard: if two requests raced to be the first user they
+    // both got role='admin'. Keep only the one that is the sole row; downgrade
+    // the other to viewer so there's exactly one bootstrap admin.
+    if (isFirst && user) {
+      const { rows: [{ count: total }] } = await app.db.query('SELECT COUNT(*) FROM users')
+      if (total !== '1') {
+        await app.db.query("UPDATE users SET role='viewer' WHERE id=$1", [user.id])
+        user.role = 'viewer'
+      }
+    }
+
     const tokens = await issueTokens(app, app.db, user, {
       device_name, device_type,
       ip_address: request.ip,
@@ -100,16 +113,19 @@ export default async function authRoutes(app) {
     const { refresh_token } = request.body
     if (!refresh_token) return reply.code(400).send({ error: 'refresh_token required' })
 
-    // Find candidate tokens for this hash (bcrypt compare is O(n) — limit the search)
+    // Use the token prefix (first 16 chars, stored plaintext) to find the
+    // candidate row via an indexed lookup before doing the expensive bcrypt compare.
+    // Rows without a prefix (issued before migration 015) fall back gracefully —
+    // token_prefix IS NULL rows simply won't match and those sessions expire naturally.
+    const tokenPrefix = refresh_token.slice(0, 16)
     const { rows } = await app.db.query(`
       SELECT rt.*, u.username, u.role
       FROM refresh_tokens rt
       JOIN users u ON u.id = rt.user_id
-      WHERE rt.revoked_at IS NULL
+      WHERE rt.token_prefix = $1
+        AND rt.revoked_at IS NULL
         AND rt.expires_at > now()
-      ORDER BY rt.created_at DESC
-      LIMIT 50
-    `)
+    `, [tokenPrefix])
 
     let match = null
     for (const row of rows) {
@@ -162,12 +178,32 @@ export default async function authRoutes(app) {
   // Revoke all sessions except the current one (logout everywhere)
   app.delete('/devices', { preHandler: app.authenticate }, async (request, reply) => {
     const { current_refresh_token } = request.body ?? {}
-    // We can't identify the current session from the access token alone, so the client
-    // optionally sends its current refresh token to keep it alive.
-    await app.db.query(
-      "UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
-      [request.user.sub]
-    )
+
+    let keepId = null
+    if (current_refresh_token) {
+      // Find the current session's DB id so we can exclude it from the revocation.
+      const prefix = current_refresh_token.slice(0, 16)
+      const { rows } = await app.db.query(
+        `SELECT id, token_hash FROM refresh_tokens
+         WHERE token_prefix=$1 AND user_id=$2 AND revoked_at IS NULL`,
+        [prefix, request.user.sub]
+      )
+      for (const row of rows) {
+        if (await bcrypt.compare(current_refresh_token, row.token_hash)) { keepId = row.id; break }
+      }
+    }
+
+    if (keepId) {
+      await app.db.query(
+        "UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL AND id != $2",
+        [request.user.sub, keepId]
+      )
+    } else {
+      await app.db.query(
+        "UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
+        [request.user.sub]
+      )
+    }
     return reply.code(204).send()
   })
 }

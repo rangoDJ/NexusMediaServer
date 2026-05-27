@@ -35,6 +35,7 @@ export async function fetchMovieMetadata(title, year, { apiKey, language = 'en' 
     profile_url: c.profile_path ? `${IMAGE_BASE}/w185${c.profile_path}` : null,
   }))
 
+  const col = detail.belongs_to_collection
   return {
     tmdb_id:      String(detail.id),
     imdb_id:      detail.imdb_id ?? null,
@@ -51,6 +52,12 @@ export async function fetchMovieMetadata(title, year, { apiKey, language = 'en' 
     director,
     writer,
     cast,
+    collection: col ? {
+      tmdb_id:      String(col.id),
+      name:         col.name,
+      poster_url:   col.poster_path   ? `${IMAGE_BASE}/w500${col.poster_path}`   : null,
+      backdrop_url: col.backdrop_path ? `${IMAGE_BASE}/w1280${col.backdrop_path}` : null,
+    } : null,
   }
 }
 
@@ -76,6 +83,7 @@ export async function fetchMovieById(tmdbId, { apiKey, language = 'en' } = {}) {
     profile_url: c.profile_path ? `${IMAGE_BASE}/w185${c.profile_path}` : null,
   }))
 
+  const col = detail.belongs_to_collection
   return {
     tmdb_id:      String(detail.id),
     imdb_id:      detail.imdb_id ?? null,
@@ -90,6 +98,12 @@ export async function fetchMovieById(tmdbId, { apiKey, language = 'en' } = {}) {
     poster_url:   detail.poster_path   ? `${IMAGE_BASE}/w500${detail.poster_path}`   : null,
     backdrop_url: detail.backdrop_path ? `${IMAGE_BASE}/w1280${detail.backdrop_path}` : null,
     director, writer, cast,
+    collection: col ? {
+      tmdb_id:      String(col.id),
+      name:         col.name,
+      poster_url:   col.poster_path   ? `${IMAGE_BASE}/w500${col.poster_path}`   : null,
+      backdrop_url: col.backdrop_path ? `${IMAGE_BASE}/w1280${col.backdrop_path}` : null,
+    } : null,
   }
 }
 
@@ -111,6 +125,28 @@ export async function fetchSeriesById(tmdbId, { apiKey, language = 'en' } = {}) 
     poster_url: detail.poster_path ? `${IMAGE_BASE}/w500${detail.poster_path}` : null,
     backdrop_url: detail.backdrop_path ? `${IMAGE_BASE}/w1280${detail.backdrop_path}` : null,
   }
+}
+
+/**
+ * Search TMDB for alternative matches — used by the manual re-identification feature.
+ * type: 'movie' | 'tv'
+ */
+export async function searchTmdb(query, type = 'movie', { apiKey, language = 'en' } = {}) {
+  const key = apiKey || process.env.TMDB_API_KEY
+  if (!key) return []
+  const tmdb = client(key)
+  tmdb.defaults.params.language = language
+
+  const endpoint = type === 'tv' ? '/search/tv' : '/search/movie'
+  const { data } = await tmdb.get(endpoint, { params: { query, include_adult: false } })
+  return (data.results ?? []).slice(0, 10).map(r => ({
+    tmdb_id:   String(r.id),
+    title:     r.title ?? r.name,
+    year:      (r.release_date ?? r.first_air_date)?.slice(0, 4) ?? null,
+    poster_url: r.poster_path ? `${IMAGE_BASE}/w342${r.poster_path}` : null,
+    rating:    r.vote_average ?? null,
+    overview:  r.overview ?? null,
+  }))
 }
 
 export async function fetchSeriesMetadata(title, { apiKey, language = 'en' } = {}) {

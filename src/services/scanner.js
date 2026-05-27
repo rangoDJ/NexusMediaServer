@@ -1,5 +1,10 @@
 import { readdir, stat } from 'fs/promises'
 import { join, extname, basename, dirname } from 'path'
+import { parseNfo } from './nfoParser.js'
+import { fetchMovieMetadata, fetchSeriesMetadata } from './tmdb.js'
+import { getSettings } from './settingsCache.js'
+import { probeFile } from './probe.js'
+import { callHook } from './pluginLoader.js'
 
 /** Fast recursive video-file count for progress calculation. */
 async function countVideoFiles(libraryType, rootPath, log) {
@@ -40,12 +45,6 @@ async function countVideoFiles(libraryType, rootPath, log) {
     return 0
   }
 }
-import { parseNfo } from './nfoParser.js'
-import { fetchMovieMetadata, fetchSeriesMetadata } from './tmdb.js'
-import { getSettings } from './settingsCache.js'
-import { probeFile } from './probe.js'
-import { callHook } from './pluginLoader.js'
-
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.flv'])
 
 // Local artwork filenames the scanner looks for alongside the media file.
@@ -332,12 +331,64 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localA
 
   if (rows[0]) {
     log.info(`[scan] ✓ Inserted movie "${rows[0].title}" (${rows[0].year ?? '?'}) tmdb=${rows[0].tmdb_id ?? 'none'}`)
+
+    // Upsert collection membership if TMDB returned belongs_to_collection
+    if (tmdbMeta.collection) {
+      try {
+        const col = tmdbMeta.collection
+        const { rows: colRows } = await db.query(`
+          INSERT INTO collections(tmdb_id, name, poster_url, backdrop_url)
+          VALUES($1, $2, $3, $4)
+          ON CONFLICT (tmdb_id) DO UPDATE
+            SET name=$2, poster_url=$3, backdrop_url=$4, updated_at=now()
+          RETURNING id
+        `, [col.tmdb_id, col.name, col.poster_url ?? null, col.backdrop_url ?? null])
+        if (colRows[0]) {
+          await db.query(
+            'UPDATE media_items SET collection_id=$1 WHERE id=$2',
+            [colRows[0].id, rows[0].id]
+          )
+          log.info(`[scan] ↳ Collection "${col.name}" (tmdb=${col.tmdb_id})`)
+        }
+      } catch (err) {
+        log.warn(`[scan] Collection upsert failed for "${tmdbMeta.collection?.name}": ${err.message}`)
+      }
+    }
+
     callHook('media.added', { type: 'movie', ...rows[0] }, log).catch(err => log.warn({ err }, '[scan] media.added hook failed'))
     return { id: rows[0].id, title: rows[0].title, type: 'movie' }
   } else {
     log.warn(`[scan] Insert returned no row for "${title}" — possible conflict`)
     return null
   }
+}
+
+/**
+ * If the episode's on-disk file size changed, re-probe and UPDATE the row in
+ * place. Never deletes or re-inserts — that would orphan watch_progress rows.
+ */
+async function reprobeEpisodeIfChanged(db, existingRow, filePath, log) {
+  try {
+    const st    = await stat(filePath)
+    const dbSize = existingRow.file_size != null ? Number(existingRow.file_size) : null
+    if (dbSize == null || st.size === dbSize) return
+    log.info(`[scan] Episode file size changed (${dbSize} → ${st.size}) — re-probing in place: ${basename(filePath)}`)
+    const fi = await probeFile(db, filePath).catch(() => null)
+    if (fi) {
+      await db.query(`
+        UPDATE episodes SET
+          duration_secs=$2, video_codec=$3, audio_codec=$4, container=$5,
+          file_size=$6, width=$7, height=$8, bitrate_kbps=$9
+        WHERE id=$1
+      `, [
+        existingRow.id,
+        fi.duration_secs ?? null, fi.video?.codec ?? null,
+        fi.audio?.codec ?? null,  fi.container ?? null,
+        fi.file_size ?? null,     fi.video?.width ?? null,
+        fi.video?.height ?? null, fi.bitrate_kbps ?? null,
+      ])
+    }
+  } catch { /* stat failed — keep existing row */ }
 }
 
 async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
@@ -509,36 +560,11 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
         const episodeNumber = epMatch ? parseInt(epMatch[2]) : 0
         const filePath      = join(seasonPath, epFile)
 
-        // Early-skip: if the file is already in the DB, leave it alone. If the
-        // on-disk file size changed, UPDATE the existing row's metadata in
-        // place — NEVER delete + re-insert (that orphans watch_progress and
-        // breaks the next-episode lookup). The "refresh metadata" task is
-        // the right place to re-fetch TMDB / NFO data for existing items.
+        // Early-skip: if the file is already in the DB, leave it alone.
+        // reprobeEpisodeIfChanged handles the "file replaced in place" case.
         const existingEpRow = existingEpMap.get(filePath)
         if (existingEpRow) {
-          try {
-            const st = await stat(filePath)
-            const dbSize = existingEpRow.file_size != null
-              ? Number(existingEpRow.file_size) : null
-            if (dbSize != null && st.size !== dbSize) {
-              log.info(`[scan] Episode file size changed (${dbSize} → ${st.size}) — re-probing in place: ${epFile}`)
-              const fi = await probeFile(db, filePath).catch(() => null)
-              if (fi) {
-                await db.query(`
-                  UPDATE episodes SET
-                    duration_secs=$2, video_codec=$3, audio_codec=$4, container=$5,
-                    file_size=$6, width=$7, height=$8, bitrate_kbps=$9
-                  WHERE id=$1
-                `, [
-                  existingEpRow.id,
-                  fi.duration_secs ?? null, fi.video?.codec ?? null,
-                  fi.audio?.codec ?? null, fi.container ?? null,
-                  fi.file_size ?? null, fi.video?.width ?? null,
-                  fi.video?.height ?? null, fi.bitrate_kbps ?? null,
-                ])
-              }
-            }
-          } catch { /* stat fail → keep existing row */ }
+          await reprobeEpisodeIfChanged(db, existingEpRow, filePath, log)
           onItem?.(filePath)
           log.debug(`[scan] Episode already in DB, skipping: ${epFile}`)
           continue
@@ -599,28 +625,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
 
         const existingEpRow = existingEpMap.get(filePath)
         if (existingEpRow) {
-          try {
-            const st = await stat(filePath)
-            const dbSize = existingEpRow.file_size != null ? Number(existingEpRow.file_size) : null
-            if (dbSize != null && st.size !== dbSize) {
-              log.info(`[scan] Episode file size changed (${dbSize} → ${st.size}) — re-probing in place: ${epFile}`)
-              const fi = await probeFile(db, filePath).catch(() => null)
-              if (fi) {
-                await db.query(`
-                  UPDATE episodes SET
-                    duration_secs=$2, video_codec=$3, audio_codec=$4, container=$5,
-                    file_size=$6, width=$7, height=$8, bitrate_kbps=$9
-                  WHERE id=$1
-                `, [
-                  existingEpRow.id,
-                  fi.duration_secs ?? null, fi.video?.codec ?? null,
-                  fi.audio?.codec ?? null,  fi.container ?? null,
-                  fi.file_size ?? null,     fi.video?.width ?? null,
-                  fi.video?.height ?? null, fi.bitrate_kbps ?? null,
-                ])
-              }
-            }
-          } catch { /* stat fail → keep existing row */ }
+          await reprobeEpisodeIfChanged(db, existingEpRow, filePath, log)
           onItem?.(filePath)
           log.debug(`[scan] Episode already in DB, skipping: ${epFile}`)
           continue

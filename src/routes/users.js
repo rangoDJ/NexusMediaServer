@@ -38,7 +38,14 @@ export default async function usersRoutes(app) {
   // Self: change password
   app.put('/me/password', async (request, reply) => {
     const { current_password, new_password } = request.body
+
+    if (typeof new_password !== 'string' || new_password.trim().length < 8) {
+      return reply.code(400).send({ error: 'new_password must be at least 8 characters' })
+    }
+
     const { rows } = await app.db.query('SELECT password_hash FROM users WHERE id=$1', [request.user.sub])
+    if (!rows.length) return reply.code(404).send({ error: 'User not found' })
+
     if (!(await bcrypt.compare(current_password, rows[0].password_hash))) {
       return reply.code(401).send({ error: 'Current password incorrect' })
     }

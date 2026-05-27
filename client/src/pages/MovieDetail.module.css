@@ -162,14 +162,170 @@
   padding: 4px 0;
 }
 
-/* ── Play button ────────────────────────────────────────────────────────── */
-.playBtn {
-  align-self: flex-start;
+/* ── Action row (play + favorite + fix match) ───────────────────────────── */
+.actionRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.playBtn {
   padding: 10px 28px;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.favoriteBtn {
+  padding: 9px 16px;
+  font-size: 20px;
+  line-height: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.favoriteBtn:hover { background: var(--surface2); color: #ffd700; border-color: #ffd700; }
+.favoriteBtnActive { color: #ffd700 !important; border-color: #ffd700 !important; }
+
+.rematchBtn {
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.rematchBtn:hover { background: var(--surface2); color: var(--text); }
+
+/* ── Re-identification dialog ───────────────────────────────────────────── */
+.rematchOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.rematchDialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 760px;
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+}
+
+.rematchHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.rematchHeader h3 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.rematchSearch {
+  display: flex;
+  gap: 10px;
+}
+
+.rematchInput {
+  flex: 1;
+  padding: 9px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.rematchInput:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+
+.rematchError {
+  font-size: 13px;
+  color: #f87171;
+}
+
+.rematchGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 14px;
+}
+
+.rematchCard {
+  background: none;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 4px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+.rematchCard:hover:not(:disabled) { border-color: var(--accent); background: var(--surface2); }
+.rematchCard:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.rematchPoster {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2/3;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface2);
+  margin-bottom: 6px;
+}
+.rematchPoster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.rematchPosterPlaceholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.rematchApplying {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.rematchTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.rematchYear, .rematchRating {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
 /* ── Cast & Crew ────────────────────────────────────────────────────────── */

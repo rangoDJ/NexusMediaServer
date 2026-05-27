@@ -29,9 +29,12 @@ import searchRoutes from './routes/search.js'
 import peopleRoutes from './routes/people.js'
 import taskRoutes from './routes/tasks.js'
 import eventsRoute from './routes/events.js'
+import collectionsRoutes from './routes/collections.js'
 import { createScanLibrariesTask } from './tasks/scanLibraries.js'
 import { cleanupSessionsTask } from './tasks/cleanupSessions.js'
 import { refreshMetadataTask } from './tasks/refreshMetadata.js'
+import { generateTrickplayTask } from './tasks/generateTrickplay.js'
+import { analyzeIntrosTask } from './tasks/analyzeIntros.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
@@ -84,6 +87,8 @@ const scheduler = new TaskScheduler(app.db, app.log)
 scheduler.register(createScanLibrariesTask(broadcaster))
 scheduler.register(cleanupSessionsTask)
 scheduler.register(refreshMetadataTask)
+scheduler.register(generateTrickplayTask)
+scheduler.register(analyzeIntrosTask)
 app.decorate('scheduler', scheduler)
 
 // ── Directory watcher ─────────────────────────────────────────────────────────
@@ -107,8 +112,9 @@ await app.register(settingsRoutes,   { prefix: '/api/v1/settings' })
 await app.register(pluginRoutes,     { prefix: '/api/v1/plugins' })
 await app.register(searchRoutes,     { prefix: '/api/v1/search' })
 await app.register(peopleRoutes,     { prefix: '/api/v1/people' })
-await app.register(taskRoutes,       { prefix: '/api/v1/tasks' })
-await app.register(eventsRoute,      { prefix: '/api/v1' })
+await app.register(taskRoutes,        { prefix: '/api/v1/tasks' })
+await app.register(collectionsRoutes, { prefix: '/api/v1/collections' })
+await app.register(eventsRoute,       { prefix: '/api/v1' })
 
 // Docker healthcheck endpoint. MUST always return 2xx as long as the
 // server itself is responsive — the transcoder stats are best-effort and

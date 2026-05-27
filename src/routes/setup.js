@@ -84,18 +84,20 @@ export default async function setupRoutes(app) {
         [admin.username.trim(), admin.email.trim(), hash]
       )
 
+      const VALID_TYPES = new Set(['movies', 'series', 'tv'])
       for (const lib of libraries) {
         const paths = (lib.paths ?? []).map(p => p.trim()).filter(Boolean)
         if (!lib.name?.trim() || paths.length === 0) continue
+        const type = VALID_TYPES.has(lib.type) ? lib.type : 'movies'
         await client.query(
           `INSERT INTO libraries(name, type, paths) VALUES($1, $2, $3)`,
-          [lib.name.trim(), lib.type ?? 'movies', paths]
+          [lib.name.trim(), type, paths]
         )
       }
 
       if (tmdb_api_key?.trim()) {
         await client.query(
-          `UPDATE settings SET value = $1 WHERE key = 'metadata.tmdb_api_key'`,
+          `UPDATE settings SET value = $1 WHERE key = 'tmdb.api_key'`,
           [JSON.stringify(tmdb_api_key.trim())]
         )
         invalidateSettingsCache()

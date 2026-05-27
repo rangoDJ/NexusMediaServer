@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { sessionStore } from '../services/sessionStore.js'
 import { startTranscodeSession, stopSession, touchSession } from '../services/transcoder.js'
 
@@ -125,7 +125,10 @@ function servePlaylist(request, reply, pathParts) {
 
   touchSession(request.params.id)
 
-  const fullPath = join(s.outputDir, ...pathParts)
+  const fullPath = resolve(s.outputDir, ...pathParts)
+  if (!fullPath.startsWith(s.outputDir + '/') && fullPath !== s.outputDir) {
+    return reply.code(400).send({ error: 'Invalid path' })
+  }
   const exists = existsSync(fullPath)
   console.log(`[sessions:${request.params.id}] playlist ${pathParts.join('/')} → ${fullPath} exists=${exists} status=${s.status}`)
 
@@ -147,7 +150,10 @@ function serveSegment(request, reply, pathParts) {
 
   touchSession(request.params.id)
 
-  const fullPath = join(s.outputDir, ...pathParts)
+  const fullPath = resolve(s.outputDir, ...pathParts)
+  if (!fullPath.startsWith(s.outputDir + '/') && fullPath !== s.outputDir) {
+    return reply.code(400).send({ error: 'Invalid path' })
+  }
   if (!existsSync(fullPath)) return reply.code(404).send({ error: 'Segment not found' })
 
   reply.header('Content-Type', 'video/MP2T')

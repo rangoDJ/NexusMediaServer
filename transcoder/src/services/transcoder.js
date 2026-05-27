@@ -180,9 +180,10 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry, startTimeSecs 
   // ffmpeg to finish encoding the first segment for every variant before the
   // master playlist appears. ffmpeg will overwrite this with an equivalent file
   // once it's ready — the pre-written copy just removes the startup latency.
-  // CODECS uses a baseline H.264 profile / level + low-complexity AAC, which
-  // matches what libx264+aac at our bitrates actually produces. RESOLUTION lets
-  // hls.js pick a level based on viewport size rather than only bandwidth.
+  // CODECS = H.264 High Profile Level 4.0 + AAC-LC.  The ABR ffmpeg command
+  // below enforces "-profile:v high -level 4.0" so the descriptor matches the
+  // actual bitstream — strict HLS clients (Smart TVs, older iOS) reject streams
+  // whose CODECS attribute doesn't match the decoded profile/level.
   const CODECS = 'avc1.640028,mp4a.40.2'
   const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3']
   for (const v of ABR_VARIANTS) {
@@ -201,12 +202,15 @@ function launchAbrFfmpeg(session_id, file_path, outputDir, entry, startTimeSecs 
   if (startTimeSecs > 0) proc.inputOptions(`-ss ${startTimeSecs}`)
 
   const opts = []
-  // Per-variant video stream config
+  // Per-variant video stream config.
+  // -profile:v high -level 4.0 must match the CODECS descriptor in master.m3u8.
   ABR_VARIANTS.forEach((v, i) => {
     opts.push(
       '-map', '0:v:0',
       `-c:v:${i}`, 'libx264',
       '-preset', 'veryfast',
+      `-profile:v:${i}`, 'high',
+      `-level:v:${i}`, '4.0',
       `-b:v:${i}`, v.bitrate,
       `-maxrate:v:${i}`, v.bitrate,
       `-bufsize:v:${i}`, v.bitrate,
@@ -381,8 +385,11 @@ export function stopSession(session_id, reason = 'manual') {
   console.log(`[transcoder] Stopping session ${session_id} (${reason})`)
   clearTimeout(s.watchdog)
   sessionStore.delete(session_id)
-  drainProcess(session_id, s.process).catch(() => {})
-  rm(s.outputDir, { recursive: true, force: true }).catch(() => {})
+  // Drain first, then delete — rm runs concurrently with ffmpeg otherwise,
+  // causing write errors as segments land in a directory that no longer exists.
+  drainProcess(session_id, s.process)
+    .then(() => rm(s.outputDir, { recursive: true, force: true }))
+    .catch(() => {})
 }
 
 // Graceful stop that RETURNS A PROMISE — used only by the shutdown handler so
