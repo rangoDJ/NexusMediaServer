@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import Player from './Player.jsx'
@@ -125,6 +126,7 @@ export default function MovieDetail() {
   }, {})
 
   return (
+  <>
     <div className={styles.page}>
       {/* ── Hero with blurred backdrop ─────────────────────────────────── */}
       <div className={styles.hero}>
@@ -204,13 +206,6 @@ export default function MovieDetail() {
                   </button>
                 )}
               </div>
-              {showRematch && (
-                <RematchDialog
-                  item={item}
-                  onDone={handleRematchDone}
-                  onClose={() => setShowRematch(false)}
-                />
-              )}
             </div>
           </div>
         </div>
@@ -290,6 +285,18 @@ export default function MovieDetail() {
         </div>
       )}
     </div>
+
+    {/* Portal renders the dialog at document.body — avoids stacking-context
+        and event-propagation issues from the deeply nested hero section. */}
+    {showRematch && createPortal(
+      <RematchDialog
+        item={item}
+        onDone={handleRematchDone}
+        onClose={() => setShowRematch(false)}
+      />,
+      document.body
+    )}
+  </>
   )
 }
 
