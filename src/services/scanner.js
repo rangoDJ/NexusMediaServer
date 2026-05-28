@@ -3,8 +3,15 @@ import { join, extname, basename, dirname } from 'path'
 import { parseNfo } from './nfoParser.js'
 import { fetchMovieMetadata, fetchSeriesMetadata } from './tmdb.js'
 import { getSettings } from './settingsCache.js'
-import { probeFile } from './probe.js'
+import { probeFile, invalidateProbeCache } from './probe.js'
 import { callHook } from './pluginLoader.js'
+
+/**
+ * Yield to the Node.js event loop so that pending HTTP request callbacks
+ * can run between file-processing iterations. setImmediate fires in the
+ * "check" phase — after I/O poll — which is what we need here.
+ */
+const yieldToEventLoop = () => new Promise(resolve => setImmediate(resolve))
 
 /** Fast recursive video-file count for progress calculation. */
 async function countVideoFiles(libraryType, rootPath, log) {
@@ -108,12 +115,22 @@ export async function scanLibrary(db, library, log, broadcaster = null) {
     log.info(`[scan] Pre-count: ${totalFiles} video file(s) found across ${library.paths.length} path(s)`)
     emit('Discovering files', 5)
 
-    // Progress tracker shared across all paths
+    // Progress tracker shared across all paths.
+    // Throttled to emit at most once per second: the DB UPDATE and SSE broadcast
+    // inside emit() are fire-and-forget, and firing one per file on a large
+    // fully-scanned library (where files are skipped in <1 ms each) floods the
+    // connection pool with hundreds of concurrent UPDATE queries and starves
+    // normal HTTP request handlers.
     let processedFiles = 0
+    let lastEmitMs = 0
     const onItem = (filename) => {
       processedFiles++
-      const pct = totalFiles > 0 ? Math.round(5 + (processedFiles / totalFiles) * 80) : 50
-      emit('Importing', pct, basename(filename))
+      const now = Date.now()
+      if (now - lastEmitMs >= 1_000) {
+        lastEmitMs = now
+        const pct = totalFiles > 0 ? Math.round(5 + (processedFiles / totalFiles) * 80) : 50
+        emit('Importing', pct, basename(filename))
+      }
     }
 
     let itemsAdded = []
@@ -141,10 +158,13 @@ export async function scanLibrary(db, library, log, broadcaster = null) {
       ['idle', library.id]
     )
 
+    // Drop the probe node cache so the next scan re-resolves a fresh node.
+    invalidateProbeCache()
     callHook('scan.complete', { library, itemCount }, log).catch(err => log.warn({ err }, '[scan] scan.complete hook failed'))
     broadcaster?.emitScanComplete(library.id, library.name, itemsAdded)
   } catch (err) {
     log.error({ err }, `[scan] ✗ Library "${library.name}" failed: ${err.message}`)
+    invalidateProbeCache()
     await db.query(
       'UPDATE libraries SET scan_status=$1, scan_progress=NULL, scan_phase=NULL, scan_current=NULL WHERE id=$2',
       ['error', library.id]
@@ -201,12 +221,14 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
       onItem?.(filePath)
       const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork)
       if (added) itemsAdded.push(added)
+      await yieldToEventLoop()
 
     } else if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
       log.info(`[scan] Processing movie file: ${entry.name}`)
       onItem?.(fullPath)
       const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log, { poster_path: null, backdrop_path: null })
       if (added) itemsAdded.push(added)
+      await yieldToEventLoop()
 
     } else {
       log.debug(`[scan] Skipping non-video entry: ${entry.name}`)
@@ -567,6 +589,9 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
           await reprobeEpisodeIfChanged(db, existingEpRow, filePath, log)
           onItem?.(filePath)
           log.debug(`[scan] Episode already in DB, skipping: ${epFile}`)
+          // Yield so HTTP handlers aren't starved when hundreds of already-scanned
+          // episodes are skipped in rapid succession (each iteration < 1 ms).
+          await yieldToEventLoop()
           continue
         }
 
@@ -607,6 +632,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
           fileInfo?.video?.height ?? null, fileInfo?.bitrate_kbps ?? null,
           JSON.stringify(epMetadata),
         ])
+        await yieldToEventLoop()
       }
     }
 
@@ -628,6 +654,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
           await reprobeEpisodeIfChanged(db, existingEpRow, filePath, log)
           onItem?.(filePath)
           log.debug(`[scan] Episode already in DB, skipping: ${epFile}`)
+          await yieldToEventLoop()
           continue
         }
 
@@ -668,6 +695,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
           fileInfo?.video?.height ?? null, fileInfo?.bitrate_kbps ?? null,
           JSON.stringify(epMetadata),
         ])
+        await yieldToEventLoop()
       }
     }
   }
