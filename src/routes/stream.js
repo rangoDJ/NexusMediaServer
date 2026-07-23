@@ -43,33 +43,63 @@ export default async function streamRoutes(app) {
       if (override.bitrate)    bitrate    = override.bitrate
     }
 
-    const node = await pickTranscoder(app.db)
-    if (!node) return reply.code(503).send({ error: 'No transcoder nodes available' })
+    // Dedup — reuse an already-running transcode for the exact same media +
+    // params (page reload, duplicate tab, retry after a network blip) instead
+    // of spawning a second ffmpeg process for it. Only reuse sessions on nodes
+    // that are still actually reachable, matching pickTranscoder's own
+    // staleness window.
+    const { rows: reusable } = await app.db.query(`
+      SELECT s.transcoder_node_id, s.remote_session_id, s.is_abr
+      FROM transcode_sessions s
+      JOIN transcoder_nodes n ON n.id = s.transcoder_node_id
+      WHERE s.status='active'
+        AND s.media_item_id IS NOT DISTINCT FROM $1
+        AND s.episode_id    IS NOT DISTINCT FROM $2
+        AND s.codec = $3
+        AND s.resolution = $4
+        AND s.bitrate IS NOT DISTINCT FROM $5
+        AND s.start_time_secs = $6
+        AND s.is_abr = $7
+        AND n.is_enabled AND n.last_seen_at > now() - interval '2 minutes'
+      LIMIT 1
+    `, [media_item_id ?? null, episode_id ?? null, codec, resolution, bitrate ?? null, start_time_secs, variants === true])
 
-    let remoteSessionId, abr
-    try {
-      const { data } = await axios.post(
-        `${node.url}/session`,
-        { file_path: filePath, codec, resolution, bitrate, variants, start_time_secs },
-        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 10_000 }
-      )
-      remoteSessionId = data.session_id
-      abr = data.abr === true
-    } catch (err) {
-      app.log.error(err, `Failed to start session on transcoder ${node.url}`)
-      return reply.code(502).send({ error: 'Transcoder unavailable' })
+    let nodeId, remoteSessionId, abr
+
+    if (reusable.length) {
+      nodeId = reusable[0].transcoder_node_id
+      remoteSessionId = reusable[0].remote_session_id
+      abr = reusable[0].is_abr
+      app.log.info(`[stream] Reusing existing transcode session ${remoteSessionId} on node ${nodeId}`)
+    } else {
+      const node = await pickTranscoder(app.db)
+      if (!node) return reply.code(503).send({ error: 'No transcoder nodes available (none reachable or all at capacity)' })
+
+      try {
+        const { data } = await axios.post(
+          `${node.url}/session`,
+          { file_path: filePath, codec, resolution, bitrate, variants, start_time_secs },
+          { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 10_000 }
+        )
+        remoteSessionId = data.session_id
+        abr = data.abr === true
+      } catch (err) {
+        app.log.error(err, `Failed to start session on transcoder ${node.url}`)
+        return reply.code(502).send({ error: 'Transcoder unavailable' })
+      }
+
+      nodeId = node.id
+      await claimSession(app.db, node.id)
     }
 
     const { rows } = await app.db.query(`
       INSERT INTO transcode_sessions
         (user_id, media_item_id, episode_id, transcoder_node_id, remote_session_id,
-         codec, resolution, bitrate, status, expires_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,'active', now() + interval '4 hours')
+         codec, resolution, bitrate, start_time_secs, is_abr, status, expires_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active', now() + interval '4 hours')
       RETURNING id
-    `, [userId, media_item_id ?? null, episode_id ?? null, node.id, remoteSessionId,
-        codec, resolution, bitrate ?? null])
-
-    await claimSession(app.db, node.id)
+    `, [userId, media_item_id ?? null, episode_id ?? null, nodeId, remoteSessionId,
+        codec, resolution, bitrate ?? null, start_time_secs, abr])
 
     const sessionId = rows[0].id
 
@@ -113,8 +143,12 @@ export default async function streamRoutes(app) {
       } catch (err) {
         const status = err.response?.status
         app.log.error(`[stream] playlist.m3u8 poll error: status=${status} msg=${err.message}`)
+        // Only a confirmed 500 from the node (transcode genuinely failed) fails fast.
+        // Everything else — connection refused, timeout, DNS blip — is a transient
+        // network hiccup, not proof the stream is broken. Retry it like a 202.
         if (status === 500) return reply.code(502).send({ error: 'Transcode failed — check transcoder logs' })
-        return reply.code(502).send({ error: 'Transcoder unreachable' })
+        await new Promise(r => setTimeout(r, 500))
+        continue
       }
       if (attempt === 0 || attempt % 10 === 0 || resp.status === 200) {
         app.log.info(`[stream] playlist.m3u8 attempt=${attempt} status=${resp.status}`)
@@ -181,7 +215,8 @@ export default async function streamRoutes(app) {
         const status = err.response?.status
         app.log.error(`[stream] master.m3u8 poll error: status=${status} msg=${err.message}`)
         if (status === 500) return reply.code(502).send({ error: 'Transcode failed' })
-        return reply.code(502).send({ error: 'Transcoder unreachable' })
+        await new Promise(r => setTimeout(r, 500))
+        continue
       }
       if (attempt === 0 || attempt % 10 === 0 || resp.status === 200) {
         app.log.info(`[stream] master.m3u8 attempt=${attempt} status=${resp.status}`)
@@ -220,7 +255,8 @@ export default async function streamRoutes(app) {
         const status = err.response?.status
         app.log.error(`[stream] variant ${variantPath} poll error: status=${status} msg=${err.message}`)
         if (status === 500) return reply.code(502).send({ error: 'Transcode failed' })
-        return reply.code(502).send({ error: 'Transcoder unreachable' })
+        await new Promise(r => setTimeout(r, 500))
+        continue
       }
       if (attempt === 0 || attempt % 10 === 0 || resp.status === 200) {
         app.log.info(`[stream] variant ${variantPath} attempt=${attempt} status=${resp.status}`)
@@ -505,15 +541,27 @@ export default async function streamRoutes(app) {
     }
   })
 
-  // Stop a session — clean up on both sides
+  // Stop a session — clean up on both sides. If another active row still
+  // references the same remote transcoder session (dedup — another viewer
+  // reusing the same encode), only close this row; the underlying ffmpeg
+  // process keeps running for them.
   app.delete('/:sessionId', async (request, reply) => {
     const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
     if (!session) return
 
-    await axios.delete(
-      `${session.node_url}/session/${session.remote_session_id}`,
-      { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET } }
-    ).catch(err => app.log.warn(err, `Failed to stop remote transcoder session — may already be gone (node=${session.node_url})`))
+    const { rows: otherViewers } = await app.db.query(`
+      SELECT 1 FROM transcode_sessions
+      WHERE transcoder_node_id = $1 AND remote_session_id = $2
+        AND status='active' AND id != $3
+      LIMIT 1
+    `, [session.transcoder_node_id, session.remote_session_id, request.params.sessionId])
+
+    if (!otherViewers.length) {
+      await axios.delete(
+        `${session.node_url}/session/${session.remote_session_id}`,
+        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET } }
+      ).catch(err => app.log.warn(err, `Failed to stop remote transcoder session — may already be gone (node=${session.node_url})`))
+    }
 
     await app.db.query(
       "UPDATE transcode_sessions SET status='done', ended_at=now() WHERE id=$1",
@@ -560,16 +608,26 @@ async function proxySegment(app, request, reply, pathParts) {
 
   const session = await getActiveSession(app.db, request.params.sessionId, request.user.sub, reply)
   if (!session) return
-  try {
-    const res = await axios.get(
-      `${session.node_url}/session/${session.remote_session_id}/${pathParts.join('/')}`,
-      { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
-        responseType: 'arraybuffer', timeout: 15_000 }
-    )
-    reply.header('Content-Type', 'video/MP2T')
-    return Buffer.from(res.data)
-  } catch {
-    return reply.code(502).send({ error: 'Segment unavailable' })
+
+  const segmentUrl = `${session.node_url}/session/${session.remote_session_id}/${pathParts.join('/')}`
+  // Segments are fetched constantly during playback — a single transient
+  // network blip shouldn't stall it. One short retry before giving up.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await axios.get(segmentUrl, {
+        headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+        responseType: 'arraybuffer', timeout: 15_000,
+      })
+      reply.header('Content-Type', 'video/MP2T')
+      return Buffer.from(res.data)
+    } catch (err) {
+      if (attempt === 0) {
+        app.log.debug(`[stream] segment fetch failed, retrying once: ${err.message}`)
+        await new Promise(r => setTimeout(r, 300))
+        continue
+      }
+      return reply.code(502).send({ error: 'Segment unavailable' })
+    }
   }
 }
 

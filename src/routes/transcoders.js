@@ -55,7 +55,7 @@ export default async function transcoderRoutes(app) {
 
   app.get('/', async () => {
     const { rows } = await app.db.query(`
-      SELECT id, name, url, hw_accel, is_builtin, priority, is_enabled,
+      SELECT id, name, url, hw_accel, is_builtin, priority, is_enabled, max_sessions,
              active_sessions, last_seen_at, registered_at
       FROM transcoder_nodes
       ORDER BY priority DESC, name
@@ -80,7 +80,7 @@ export default async function transcoderRoutes(app) {
   })
 
   app.patch('/:id', async (request, reply) => {
-    const { is_enabled, priority } = request.body
+    const { is_enabled, priority, max_sessions } = request.body
     const updates = []
     const values  = []
 
@@ -91,6 +91,10 @@ export default async function transcoderRoutes(app) {
     if (priority !== undefined) {
       updates.push(`priority=$${updates.length + 1}`)
       values.push(parseInt(priority))
+    }
+    if (max_sessions !== undefined) {
+      updates.push(`max_sessions=$${updates.length + 1}`)
+      values.push(max_sessions === null ? null : parseInt(max_sessions))
     }
 
     if (!updates.length) return reply.code(400).send({ error: 'Nothing to update' })
