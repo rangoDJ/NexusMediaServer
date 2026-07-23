@@ -94,10 +94,14 @@ export default function Libraries() {
         delete next[e.libraryId]
         return next
       })
-      const count = e.itemsAdded?.length ?? 0
-      const msg   = count > 0
-        ? `✓ ${e.libraryName} — scan complete · ${count} new item${count === 1 ? '' : 's'} added`
-        : `✓ ${e.libraryName} — scan complete · no new items`
+      const added   = e.itemsAdded?.length ?? 0
+      const removed = e.itemsRemoved?.length ?? 0
+      const parts   = []
+      if (added   > 0) parts.push(`${added} new item${added === 1 ? '' : 's'} added`)
+      if (removed > 0) parts.push(`${removed} item${removed === 1 ? '' : 's'} removed`)
+      const msg = parts.length > 0
+        ? `✓ ${e.libraryName} — scan complete · ${parts.join(' · ')}`
+        : `✓ ${e.libraryName} — scan complete · no changes`
       addToast(msg)
       loadLibraries()
     },
@@ -109,6 +113,16 @@ export default function Libraries() {
         return next
       })
       addToast(`✗ ${e.libraryName} — scan failed: ${e.errorMessage}`, 'error')
+      loadLibraries()
+    },
+
+    'scan.cancelled': (e) => {
+      setScanProgress(prev => {
+        const next = { ...prev }
+        delete next[e.libraryId]
+        return next
+      })
+      addToast(`⊘ ${e.libraryName} — scan cancelled`, 'neutral')
       loadLibraries()
     },
   })
@@ -136,6 +150,14 @@ export default function Libraries() {
         .filter(l => l.scan_status !== 'scanning')
         .map(l => triggerScan(l))
     )
+  }
+
+  async function cancelScan(library) {
+    try {
+      await api.delete(`/libraries/${library.id}/scan`)
+    } catch (err) {
+      addToast(`Failed to cancel scan: ${err.response?.data?.error ?? err.message}`, 'error')
+    }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -181,6 +203,7 @@ export default function Libraries() {
               scanState={scanProgress[lib.id] ?? null}
               isAdmin={isAdmin}
               onScan={triggerScan}
+              onCancelScan={cancelScan}
             />
           ))}
         </div>
@@ -196,7 +219,7 @@ export default function Libraries() {
 
 // ── LibraryCard ────────────────────────────────────────────────────────────────
 
-function LibraryCard({ library, scanState, isAdmin, onScan }) {
+function LibraryCard({ library, scanState, isAdmin, onScan, onCancelScan }) {
   const isScanning  = library.scan_status === 'scanning'
   const isError     = library.scan_status === 'error'
   const progress    = scanState?.progress ?? 0
@@ -232,6 +255,14 @@ function LibraryCard({ library, scanState, isAdmin, onScan }) {
             <div className={styles.progressRow}>
               <span className={styles.phaseLabel}>{phase || 'Scanning…'}</span>
               <span className={styles.progressPct}>{progress}%</span>
+              {isAdmin && (
+                <button
+                  className={styles.cancelScanBtn}
+                  onClick={() => onCancelScan(library)}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
             <div className={styles.progressTrack}>
               <div className={styles.progressFill} style={{ width: `${progress}%` }} />
@@ -283,7 +314,11 @@ function ToastStack({ toasts, onDismiss }) {
       {toasts.map(t => (
         <div
           key={t.id}
-          className={`${styles.toast} ${t.variant === 'error' ? styles.toastError : styles.toastSuccess}`}
+          className={`${styles.toast} ${
+            t.variant === 'error'   ? styles.toastError :
+            t.variant === 'neutral' ? styles.toastNeutral :
+            styles.toastSuccess
+          }`}
         >
           <span className={styles.toastMsg}>{t.message}</span>
           <button className={styles.toastClose} onClick={() => onDismiss(t.id)} aria-label="Dismiss">×</button>

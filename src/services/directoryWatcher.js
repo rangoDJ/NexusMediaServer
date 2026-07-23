@@ -90,6 +90,40 @@ export class DirectoryWatcher {
     this.#removeLibrary(libraryId)
   }
 
+  /**
+   * Stop watching a library for the duration of a scan, mirroring Jellyfin's
+   * LibraryMonitor.Stop()/Start() around ValidateMediaLibraryInternal — the
+   * watcher and the scanner must never be reading/reacting to the same
+   * filesystem changes at once. Keeps the cached library row so resume()
+   * can rebuild the watcher without a DB round-trip. No-op if disabled or
+   * the library isn't watched (e.g. it has no configured paths).
+   */
+  async pause(libraryId) {
+    if (!this.enabled) return
+    const timer = this.timers.get(libraryId)
+    if (timer) { clearTimeout(timer); this.timers.delete(libraryId) }
+
+    const w = this.watchers.get(libraryId)
+    if (w) {
+      await w.close().catch(() => {})
+      this.watchers.delete(libraryId)
+      this.log.debug(`[watcher] paused watching for library ${libraryId}`)
+    }
+  }
+
+  /** Resume watching a library after pause(). Rebuilds the chokidar watcher. */
+  async resume(libraryId) {
+    if (!this.enabled) return
+    if (this.watchers.has(libraryId)) return // never paused, or already resumed
+    const library = this.libraries.get(libraryId)
+    if (!library) return
+
+    const settings = await getSettings(this.db).catch(() => ({}))
+    const usePolling = settings['watcher.use_polling'] !== false
+    this.#addLibrary(library, usePolling)
+    this.log.debug(`[watcher] resumed watching for library ${libraryId}`)
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   #addLibrary(library, usePolling) {
@@ -162,7 +196,10 @@ export class DirectoryWatcher {
 
     this.log.info(`[watcher] "${library.name}" — change detected, starting scan`)
     try {
-      await scanLibrary(this.db, library, this.log, this.broadcaster)
+      // Pass `this` so pause()/resume() apply here too — the watcher briefly
+      // closes and reopens its own watcher for this library around the scan
+      // so it doesn't react to the writes the scan itself makes.
+      await scanLibrary(this.db, library, this.log, this.broadcaster, { watcher: this })
     } catch (err) {
       this.log.error({ err }, `[watcher] scan failed for "${library.name}"`)
     }

@@ -72,14 +72,52 @@ function pickArtwork(files, candidates) {
 }
 
 /**
+ * Registry of in-flight scans, keyed by library id, so a scan can be
+ * cancelled from outside the call that started it (e.g. a REST DELETE
+ * handler cancelling a scan that a different request kicked off).
+ * Mirrors Jellyfin's ability to cancel an in-progress library validation.
+ * @type {Map<string, AbortController>}
+ */
+const activeScans = new Map()
+
+/** True if a scan is currently registered as running for this library. */
+export function isScanRunning(libraryId) {
+  return activeScans.has(libraryId)
+}
+
+/**
+ * Abort the in-progress scan for a library, if any.
+ * @returns {boolean} true if a running scan was found and signalled to stop
+ */
+export function cancelScan(libraryId) {
+  const controller = activeScans.get(libraryId)
+  if (!controller) return false
+  controller.abort()
+  return true
+}
+
+/**
  * @param {import('pg').Pool}                             db
  * @param {object}                                        library
  * @param {import('fastify').FastifyBaseLogger}           log
  * @param {import('./scanBroadcaster.js').ScanBroadcaster|null} [broadcaster]
+ * @param {object}                                         [opts]
+ * @param {AbortSignal|null}                               [opts.signal]  external cancellation source (e.g. the task engine)
+ * @param {import('./directoryWatcher.js').DirectoryWatcher|null} [opts.watcher] paused for the duration of the scan, mirroring Jellyfin's LibraryMonitor.Stop()/Start()
  */
-export async function scanLibrary(db, library, log, broadcaster = null) {
+export async function scanLibrary(db, library, log, broadcaster = null, { signal: externalSignal = null, watcher = null } = {}) {
   log.info(`[scan] Starting library "${library.name}" (id=${library.id}, type=${library.type})`)
   log.info(`[scan] Paths: ${library.paths.join(', ')}`)
+
+  if (activeScans.has(library.id)) {
+    log.warn(`[scan] "${library.name}" is already scanning — ignoring duplicate start`)
+    return
+  }
+
+  const controller = new AbortController()
+  externalSignal?.addEventListener('abort', () => controller.abort())
+  activeScans.set(library.id, controller)
+  const signal = controller.signal
 
   const emit = (phase, progress, currentItem = null) => {
     broadcaster?.emitProgress(library.id, library.name, phase, progress, currentItem)
@@ -90,23 +128,25 @@ export async function scanLibrary(db, library, log, broadcaster = null) {
     ).catch(() => {})
   }
 
-  await db.query(
-    'UPDATE libraries SET scan_status=$1, scan_progress=$2, scan_phase=$3, scan_current=$4 WHERE id=$5',
-    ['scanning', 0, 'Starting', null, library.id]
-  )
-  emit('Discovering files', 0)
-
-  const settings = await getSettings(db)
-  const tmdbOpts = {
-    apiKey:      settings['tmdb.api_key'] || process.env.TMDB_API_KEY,
-    language:    settings['tmdb.language'] ?? 'en',
-    enabled:     settings['tmdb.enabled'] !== false,
-    nfoPriority: settings['metadata.nfo_priority'] !== false,
-  }
-
-  log.info(`[scan] TMDB enabled=${tmdbOpts.enabled}, hasKey=${!!tmdbOpts.apiKey}, language=${tmdbOpts.language}`)
+  await watcher?.pause(library.id)
 
   try {
+    await db.query(
+      'UPDATE libraries SET scan_status=$1, scan_progress=$2, scan_phase=$3, scan_current=$4 WHERE id=$5',
+      ['scanning', 0, 'Starting', null, library.id]
+    )
+    emit('Discovering files', 0)
+
+    const settings = await getSettings(db)
+    const tmdbOpts = {
+      apiKey:      settings['tmdb.api_key'] || process.env.TMDB_API_KEY,
+      language:    settings['tmdb.language'] ?? 'en',
+      enabled:     settings['tmdb.enabled'] !== false,
+      nfoPriority: settings['metadata.nfo_priority'] !== false,
+    }
+
+    log.info(`[scan] TMDB enabled=${tmdbOpts.enabled}, hasKey=${!!tmdbOpts.apiKey}, language=${tmdbOpts.language}`)
+
     // Quick pre-count so per-item progress is accurate
     let totalFiles = 0
     for (const rootPath of library.paths) {
@@ -134,24 +174,48 @@ export async function scanLibrary(db, library, log, broadcaster = null) {
     }
 
     let itemsAdded = []
+    const seenPaths = new Set()
+    let cancelled = false
 
     for (const rootPath of library.paths) {
+      if (signal.aborted) { cancelled = true; break }
+
       log.info(`[scan] → Scanning path: ${rootPath}`)
       let result
       if (library.type === 'movies') {
-        result = await scanMovies(db, library, rootPath, tmdbOpts, log, onItem)
+        result = await scanMovies(db, library, rootPath, tmdbOpts, log, onItem, signal)
       } else if (library.type === 'series' || library.type === 'tv') {
-        result = await scanTv(db, library, rootPath, tmdbOpts, log, onItem)
+        result = await scanTv(db, library, rootPath, tmdbOpts, log, onItem, signal)
       } else {
         log.warn(`[scan] Unknown library type "${library.type}" — skipping ${rootPath}`)
         continue
       }
       itemsAdded = itemsAdded.concat(result.itemsAdded)
+      for (const p of result.seenPaths) seenPaths.add(p)
+      if (result.cancelled) { cancelled = true; break }
     }
 
-    const itemCount = itemsAdded.length
+    if (cancelled) {
+      log.info(`[scan] ⊘ Library "${library.name}" cancelled`)
+      await db.query(
+        'UPDATE libraries SET scan_status=$1, scan_progress=NULL, scan_phase=NULL, scan_current=NULL WHERE id=$2',
+        ['idle', library.id]
+      )
+      invalidateProbeCache()
+      broadcaster?.emitScanCancelled(library.id, library.name)
+      return
+    }
+
     emit('Finishing', 95)
-    log.info(`[scan] ✓ Library "${library.name}" complete — ${itemCount} new item(s) added`)
+
+    // Reconciliation: remove DB rows whose backing file is confirmed gone.
+    // Only ENOENT counts as "gone" — any other stat error (permission,
+    // dropped network mount, etc.) leaves the row alone so a transient
+    // filesystem blip can never mass-delete a library.
+    const itemsRemoved = await reconcileRemovedItems(db, library, seenPaths, log)
+
+    const itemCount = itemsAdded.length
+    log.info(`[scan] ✓ Library "${library.name}" complete — ${itemCount} new item(s) added, ${itemsRemoved.length} removed`)
 
     await db.query(
       'UPDATE libraries SET scan_status=$1, last_scanned_at=now(), scan_progress=100, scan_phase=NULL, scan_current=NULL WHERE id=$2',
@@ -161,7 +225,7 @@ export async function scanLibrary(db, library, log, broadcaster = null) {
     // Drop the probe node cache so the next scan re-resolves a fresh node.
     invalidateProbeCache()
     callHook('scan.complete', { library, itemCount }, log).catch(err => log.warn({ err }, '[scan] scan.complete hook failed'))
-    broadcaster?.emitScanComplete(library.id, library.name, itemsAdded)
+    broadcaster?.emitScanComplete(library.id, library.name, itemsAdded, itemsRemoved)
   } catch (err) {
     log.error({ err }, `[scan] ✗ Library "${library.name}" failed: ${err.message}`)
     invalidateProbeCache()
@@ -171,10 +235,79 @@ export async function scanLibrary(db, library, log, broadcaster = null) {
     )
     broadcaster?.emitScanError(library.id, library.name, err.message)
     throw err
+  } finally {
+    activeScans.delete(library.id)
+    await watcher?.resume(library.id)
   }
 }
 
-async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
+/**
+ * Diff the on-disk paths seen during this scan against what's still in the
+ * DB for the library, and delete rows for files that are confirmed gone.
+ * Deletes cascade via existing FKs to watch_progress, play_sessions,
+ * favorites, and media_cast. Never touches files on disk.
+ *
+ * Deliberately does NOT delete now-empty series rows — a show with zero
+ * episodes might just be newly added and not yet populated. That cleanup
+ * stays a manual, explicit action (POST /libraries/cleanup-empty-series).
+ */
+async function reconcileRemovedItems(db, library, seenPaths, log) {
+  const removed = []
+
+  if (library.type === 'movies') {
+    const { rows } = await db.query(
+      'SELECT id, title, file_path FROM media_items WHERE library_id=$1',
+      [library.id]
+    )
+    const candidates = rows.filter(r => r.file_path && !seenPaths.has(r.file_path))
+    const toDelete = await filterConfirmedGone(candidates, log)
+    if (toDelete.length) {
+      await db.query('DELETE FROM media_items WHERE id = ANY($1::uuid[])', [toDelete.map(r => r.id)])
+      for (const r of toDelete) {
+        log.info(`[scan] ✗ Removed movie "${r.title}" — file no longer exists: ${r.file_path}`)
+        removed.push({ id: r.id, title: r.title, type: 'movie' })
+      }
+    }
+  } else if (library.type === 'series' || library.type === 'tv') {
+    const { rows } = await db.query(`
+      SELECT e.id, e.file_path, e.season_number, e.episode_number, m.title AS series_title
+      FROM episodes e
+      JOIN media_items m ON m.id = e.series_id
+      WHERE m.library_id = $1
+    `, [library.id])
+    const candidates = rows.filter(r => r.file_path && !seenPaths.has(r.file_path))
+    const toDelete = await filterConfirmedGone(candidates, log)
+    if (toDelete.length) {
+      await db.query('DELETE FROM episodes WHERE id = ANY($1::uuid[])', [toDelete.map(r => r.id)])
+      for (const r of toDelete) {
+        log.info(`[scan] ✗ Removed episode "${r.series_title}" S${String(r.season_number).padStart(2, '0')}E${String(r.episode_number).padStart(2, '0')} — file no longer exists: ${r.file_path}`)
+        removed.push({ id: r.id, title: r.series_title, type: 'episode' })
+      }
+    }
+  }
+
+  return removed
+}
+
+/** Keep only candidates whose file is confirmed gone (ENOENT). Any other stat error is treated as "leave it alone". */
+async function filterConfirmedGone(candidates, log) {
+  const confirmed = []
+  for (const c of candidates) {
+    try {
+      await stat(c.file_path)
+      // Still exists — must have been missed this pass (unreadable dir, etc). Leave it.
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        confirmed.push(c)
+      } else {
+        log.warn(`[scan] Could not verify "${c.file_path}" is gone (${err.code ?? err.message}) — leaving row in place`)
+      }
+    }
+  }
+  return confirmed
+}
+
+async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null, signal = null) {
   let entries
   try {
     entries = await readdir(rootPath, { withFileTypes: true })
@@ -185,8 +318,14 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
 
   log.info(`[scan] Found ${entries.length} entries in ${rootPath}`)
   const itemsAdded = []
+  const seenPaths = new Set()
 
   for (const entry of entries) {
+    if (signal?.aborted) {
+      log.info(`[scan] Cancelled while scanning "${rootPath}"`)
+      return { count: itemsAdded.length, itemsAdded, seenPaths, cancelled: true }
+    }
+
     const fullPath = join(rootPath, entry.name)
 
     if (entry.isDirectory()) {
@@ -219,6 +358,7 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
 
       log.info(`[scan] Processing movie dir: ${entry.name} → ${videoFile}${posterFile ? ` (+poster: ${posterFile})` : ''}`)
       onItem?.(filePath)
+      seenPaths.add(filePath)
       const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork)
       if (added) itemsAdded.push(added)
       await yieldToEventLoop()
@@ -226,6 +366,7 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
     } else if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
       log.info(`[scan] Processing movie file: ${entry.name}`)
       onItem?.(fullPath)
+      seenPaths.add(fullPath)
       const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log, { poster_path: null, backdrop_path: null })
       if (added) itemsAdded.push(added)
       await yieldToEventLoop()
@@ -236,7 +377,7 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null) {
   }
 
   log.info(`[scan] Movies path done — ${itemsAdded.length} new item(s) from ${rootPath}`)
-  return { count: itemsAdded.length, itemsAdded }
+  return { count: itemsAdded.length, itemsAdded, seenPaths, cancelled: false }
 }
 
 async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork = { poster_path: null, backdrop_path: null }) {
@@ -413,7 +554,7 @@ async function reprobeEpisodeIfChanged(db, existingRow, filePath, log) {
   } catch { /* stat failed — keep existing row */ }
 }
 
-async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
+async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signal = null) {
   let seriesDirs
   try {
     seriesDirs = await readdir(rootPath, { withFileTypes: true })
@@ -425,8 +566,14 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
   const seriesFolders = seriesDirs.filter(e => e.isDirectory())
   log.info(`[scan] Found ${seriesFolders.length} series folder(s) in ${rootPath}`)
   const itemsAdded = []
+  const seenPaths = new Set()
 
   for (const seriesEntry of seriesFolders) {
+    if (signal?.aborted) {
+      log.info(`[scan] Cancelled while scanning "${rootPath}"`)
+      return { count: itemsAdded.length, itemsAdded, seenPaths, cancelled: true }
+    }
+
     const seriesPath = join(rootPath, seriesEntry.name)
     log.info(`[scan] Processing series: ${seriesEntry.name}`)
 
@@ -578,9 +725,15 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
       log.info(`[scan] "${title}" S${String(seasonNumber).padStart(2,'0')}: ${videoFiles.length} episode file(s)`)
 
       for (const epFile of videoFiles) {
+        if (signal?.aborted) {
+          log.info(`[scan] Cancelled while scanning "${seasonPath}"`)
+          return { count: itemsAdded.length, itemsAdded, seenPaths, cancelled: true }
+        }
+
         const epMatch       = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
         const episodeNumber = epMatch ? parseInt(epMatch[2]) : 0
         const filePath      = join(seasonPath, epFile)
+        seenPaths.add(filePath)
 
         // Early-skip: if the file is already in the DB, leave it alone.
         // reprobeEpisodeIfChanged handles the "file replaced in place" case.
@@ -644,10 +797,16 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
     if (rootVideoFiles.length > 0) {
       log.info(`[scan] "${title}": ${rootVideoFiles.length} file(s) in series root (flat/mixed layout)`)
       for (const epFile of rootVideoFiles) {
+        if (signal?.aborted) {
+          log.info(`[scan] Cancelled while scanning "${seriesPath}"`)
+          return { count: itemsAdded.length, itemsAdded, seenPaths, cancelled: true }
+        }
+
         const epMatch       = epFile.match(/[Ss](\d{1,2})[Ee](\d{1,3})/)
         const seasonNumber  = epMatch ? parseInt(epMatch[1]) : 1
         const episodeNumber = epMatch ? parseInt(epMatch[2]) : 0
         const filePath      = join(seriesPath, epFile)
+        seenPaths.add(filePath)
 
         const existingEpRow = existingEpMap.get(filePath)
         if (existingEpRow) {
@@ -701,7 +860,7 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null) {
   }
 
   log.info(`[scan] TV path done — ${itemsAdded.length} new series from ${rootPath}`)
-  return { count: itemsAdded.length, itemsAdded }
+  return { count: itemsAdded.length, itemsAdded, seenPaths, cancelled: false }
 }
 
 function guessTitle(filePath) {

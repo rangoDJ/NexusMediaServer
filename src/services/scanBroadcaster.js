@@ -5,8 +5,9 @@
  *
  *   { type: 'connected' }
  *   { type: 'refresh.progress', libraryId, libraryName, phase, progress, currentItem }
- *   { type: 'library.changed',  libraryId, libraryName, itemsAdded }
+ *   { type: 'library.changed',  libraryId, libraryName, itemsAdded, itemsRemoved }
  *   { type: 'scan.error',       libraryId, libraryName, errorMessage }
+ *   { type: 'scan.cancelled',   libraryId, libraryName }
  *
  * Newly-connected clients immediately receive one refresh.progress message for
  * every scan that is currently in-flight, so they can render correct state.
@@ -74,11 +75,12 @@ export class ScanBroadcaster {
    * Call when a scan finishes successfully.
    * @param {string}  libraryId
    * @param {string}  libraryName
-   * @param {Array}   itemsAdded  — [{id, title, type}]
+   * @param {Array}   itemsAdded    — [{id, title, type}]
+   * @param {Array}   [itemsRemoved] — [{id, title, type}]
    */
-  emitScanComplete(libraryId, libraryName, itemsAdded = []) {
+  emitScanComplete(libraryId, libraryName, itemsAdded = [], itemsRemoved = []) {
     this.#currentScans.delete(libraryId)
-    this.#queueLibraryChanged(libraryId, libraryName, itemsAdded)
+    this.#queueLibraryChanged(libraryId, libraryName, itemsAdded, itemsRemoved)
   }
 
   /** Call when a scan fails. */
@@ -87,19 +89,27 @@ export class ScanBroadcaster {
     this.#broadcast({ type: 'scan.error', libraryId, libraryName, errorMessage })
   }
 
+  /** Call when a scan is cancelled (never reaches error or complete). */
+  emitScanCancelled(libraryId, libraryName) {
+    this.#currentScans.delete(libraryId)
+    this.#pendingChanges.delete(libraryId)
+    this.#broadcast({ type: 'scan.cancelled', libraryId, libraryName })
+  }
+
   // ── Private ──────────────────────────────────────────────────────────────────
 
   /** Batch library.changed notifications within a 2-second window (Jellyfin pattern). */
-  #queueLibraryChanged(libraryId, libraryName, itemsAdded) {
+  #queueLibraryChanged(libraryId, libraryName, itemsAdded, itemsRemoved = []) {
     const existing = this.#pendingChanges.get(libraryId)
     if (existing) {
       existing.itemsAdded.push(...itemsAdded)
+      existing.itemsRemoved.push(...itemsRemoved)
       // Reset the debounce window
       clearTimeout(existing.timer)
       existing.timer = setTimeout(() => this.#flushLibraryChanged(libraryId, libraryName), 2_000)
     } else {
       const timer = setTimeout(() => this.#flushLibraryChanged(libraryId, libraryName), 2_000)
-      this.#pendingChanges.set(libraryId, { timer, itemsAdded: [...itemsAdded] })
+      this.#pendingChanges.set(libraryId, { timer, itemsAdded: [...itemsAdded], itemsRemoved: [...itemsRemoved] })
     }
   }
 
@@ -108,10 +118,11 @@ export class ScanBroadcaster {
     if (!pending) return
     this.#pendingChanges.delete(libraryId)
     this.#broadcast({
-      type:        'library.changed',
+      type:          'library.changed',
       libraryId,
       libraryName,
-      itemsAdded:  pending.itemsAdded,
+      itemsAdded:    pending.itemsAdded,
+      itemsRemoved:  pending.itemsRemoved,
     })
   }
 

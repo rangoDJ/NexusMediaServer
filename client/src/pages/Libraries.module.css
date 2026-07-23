@@ -139,7 +139,23 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 0.5rem;
 }
+
+.cancelScanBtn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 0.7rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cancelScanBtn:hover:not(:disabled) { color: #f87171; }
+.cancelScanBtn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .phaseLabel {
   font-size: 0.78rem;
@@ -315,6 +331,7 @@
 
 .toastSuccess { background: #1a2e1a; border: 1px solid #2d5a2d; color: #86efac; }
 .toastError   { background: #2e1a1a; border: 1px solid #5a2d2d; color: #fca5a5; }
+.toastNeutral { background: #232323; border: 1px solid #3a3a3a; color: #ccc; }
 
 .toastMsg  { flex: 1; }
 .toastClose {

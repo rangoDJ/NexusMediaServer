@@ -8,11 +8,13 @@ import { scanLibrary } from '../services/scanner.js'
  *   • Every 12 hours
  *
  * Progress is reported per library: each library contributes an equal share
- * of the 0–100 progress range. Cancellation is honoured between libraries.
+ * of the 0–100 progress range. Cancellation is honoured immediately, even
+ * mid-library — the task's AbortSignal is threaded into scanLibrary().
  *
  * @param {import('../services/scanBroadcaster.js').ScanBroadcaster} broadcaster
+ * @param {import('../services/directoryWatcher.js').DirectoryWatcher} directoryWatcher
  */
-export function createScanLibrariesTask(broadcaster) {
+export function createScanLibrariesTask(broadcaster, directoryWatcher) {
   return {
     id:          'scan-libraries',
     name:        'Scan All Libraries',
@@ -47,8 +49,10 @@ export function createScanLibrariesTask(broadcaster) {
         log.info(`[tasks/scan-libraries] Scanning "${library.name}" (${i + 1}/${libraries.length})`)
 
         try {
-          // Pass broadcaster so per-item progress is pushed over SSE during scheduled runs too
-          await scanLibrary(db, library, log, broadcaster)
+          // Pass broadcaster so per-item progress is pushed over SSE during scheduled runs too.
+          // The task's own AbortSignal is threaded through so cancelling this task aborts the
+          // library currently being scanned immediately, not just at the next library boundary.
+          await scanLibrary(db, library, log, broadcaster, { signal, watcher: directoryWatcher })
         } catch (err) {
           // Log and continue — a single bad library shouldn't abort the whole task
           log.error({ err }, `[tasks/scan-libraries] Library "${library.name}" scan failed`)

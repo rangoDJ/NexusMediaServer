@@ -82,20 +82,20 @@ app.decorate('db', await createPool())
 const broadcaster = new ScanBroadcaster()
 app.decorate('broadcaster', broadcaster)
 
-// ── Task scheduler ────────────────────────────────────────────────────────────
-const scheduler = new TaskScheduler(app.db, app.log)
-scheduler.register(createScanLibrariesTask(broadcaster))
-scheduler.register(cleanupSessionsTask)
-scheduler.register(refreshMetadataTask)
-scheduler.register(generateTrickplayTask)
-scheduler.register(analyzeIntrosTask)
-app.decorate('scheduler', scheduler)
-
 // ── Directory watcher ─────────────────────────────────────────────────────────
 // Reacts to filesystem changes (new files, deletions, replacements) and runs a
 // debounced library scan — eliminates the need for frequent polling scans.
 const directoryWatcher = new DirectoryWatcher(app.db, app.log, broadcaster)
 app.decorate('directoryWatcher', directoryWatcher)
+
+// ── Task scheduler ────────────────────────────────────────────────────────────
+const scheduler = new TaskScheduler(app.db, app.log)
+scheduler.register(createScanLibrariesTask(broadcaster, directoryWatcher))
+scheduler.register(cleanupSessionsTask)
+scheduler.register(refreshMetadataTask)
+scheduler.register(generateTrickplayTask)
+scheduler.register(analyzeIntrosTask)
+app.decorate('scheduler', scheduler)
 
 // ── API routes (register before static so /api/* is never served as a file) ──
 // Setup routes must be registered first — they are publicly accessible and

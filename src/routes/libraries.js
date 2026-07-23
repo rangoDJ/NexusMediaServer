@@ -1,7 +1,7 @@
 import { unlink } from 'fs/promises'
 import axios from 'axios'
 import { requireAdmin } from '../middleware/auth.js'
-import { scanLibrary } from '../services/scanner.js'
+import { scanLibrary, cancelScan, isScanRunning } from '../services/scanner.js'
 
 const VALID_LIBRARY_TYPES = new Set(['movies', 'series', 'tv'])
 
@@ -173,9 +173,20 @@ export default async function libraryRoutes(app) {
     const { rows } = await app.db.query('SELECT * FROM libraries WHERE id=$1', [request.params.id])
     if (!rows.length) return reply.code(404).send({ error: 'Library not found' })
 
-    // Fire and forget — scan runs in background, broadcaster pushes live progress to SSE clients
-    scanLibrary(app.db, rows[0], app.log, app.broadcaster)
+    // Fire and forget — scan runs in background, broadcaster pushes live progress to SSE clients.
+    // The directory watcher is paused for the library's duration (mirrors Jellyfin's
+    // LibraryMonitor.Stop()/Start()) so the watcher and scanner never race each other.
+    scanLibrary(app.db, rows[0], app.log, app.broadcaster, { watcher: app.directoryWatcher })
       .catch(err => app.log.error(err, 'Library scan failed'))
     return { status: 'scanning' }
+  })
+
+  // Cancel an in-progress library scan
+  app.delete('/:id/scan', { preHandler: requireAdmin }, async (request, reply) => {
+    if (!isScanRunning(request.params.id)) {
+      return reply.code(409).send({ error: 'Library is not scanning' })
+    }
+    cancelScan(request.params.id)
+    return reply.code(202).send({ status: 'cancelling' })
   })
 }
