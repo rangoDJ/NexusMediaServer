@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MediaPlayer, MediaProvider, Track } from '@vidstack/react'
+import { MediaPlayer, MediaProvider, Track, useMediaRemote } from '@vidstack/react'
 import { defaultLayoutIcons, DefaultVideoLayout } from '@vidstack/react/player/layouts/default'
 import '@vidstack/react/player/styles/default/theme.css'
 import '@vidstack/react/player/styles/default/layouts/video.css'
@@ -36,6 +36,7 @@ function formatBitrate(kbps) {
 
 export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   const playerRef              = useRef(null)
+  const remote                 = useMediaRemote(playerRef)
   const lastSaveRef            = useRef(0)
   const resumeFromRef          = useRef(0)
   const menuRef                = useRef(null)
@@ -361,6 +362,59 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     }
   }
 
+  // Transcoded HLS is served as a growing "event" playlist — hls.js's own
+  // duration is only the sum of segments ffmpeg has produced *so far*, not
+  // the real length of the file. Left alone, the seek bar collapses to a
+  // sliver representing a few seconds of buffer instead of the whole movie,
+  // and grows in real time as more gets transcoded (this is the "red line"
+  // the seek bar renders as). We know the true length from playback-info
+  // (ffprobe'd at scan time), so force it via the player's remote-control
+  // API — this only affects the UI's notion of duration, not what's
+  // actually seekable; real seeks beyond the buffer are handled separately
+  // by onMediaSeekRequest below, mirroring how Jellyfin's web client trusts
+  // server-known runtime over the HLS manifest's own claimed duration.
+  function applyTrueDuration() {
+    if (mode !== 'transcode' && mode !== 'abr') return
+    const fileDuration = playbackInfo?.file?.duration_secs
+    if (fileDuration == null) return
+    const streamDuration = Math.max(0, fileDuration - currentStreamOffsetRef.current)
+    if (streamDuration > 0) remote.changeDuration(streamDuration)
+  }
+
+  // Re-assert immediately when a new stream starts...
+  useEffect(() => { applyTrueDuration() }, [src, mode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ...and every time hls.js reports its own (smaller, still-growing) value,
+  // since it keeps firing native duration updates as new segments land.
+  function onDurationChange() {
+    applyTrueDuration()
+  }
+
+  // The scrub bar computes seek targets from the (now-correct, full-length)
+  // duration above, so this fires with the user's real intended position —
+  // unlike the native 'seeked' event below, which only sees whatever hls.js
+  // actually managed to seek to (silently clamped to the tiny buffered
+  // range for anything past what's been transcoded so far).
+  function onMediaSeekRequest(event) {
+    if (mode === 'direct' || !mode || switching) return
+    const requestedTime = event.detail
+    if (requestedTime == null) return
+    const player = playerRef.current
+    if (!player) return
+
+    const buf = player.buffered
+    let bufferedEnd = 0
+    for (let i = 0; i < buf.length; i++) {
+      if (buf.start(i) <= requestedTime + 1) bufferedEnd = Math.max(bufferedEnd, buf.end(i))
+    }
+
+    if (requestedTime > bufferedEnd + 30) {
+      const absolutePos = currentStreamOffsetRef.current + Math.floor(requestedTime)
+      nextSeekOffsetRef.current = absolutePos
+      setRetryTrigger(n => n + 1)
+    }
+  }
+
   function saveProgress() {
     const player = playerRef.current
     if (!player) return
@@ -640,6 +694,8 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           thumbnails={trickplayUrl ?? undefined}
           onProviderChange={onProviderChange}
           onCanPlay={onCanPlay}
+          onDurationChange={onDurationChange}
+          onMediaSeekRequest={onMediaSeekRequest}
           onTimeUpdate={onTimeUpdate}
           onSeeked={onSeeked}
           onEnded={handleEnded}
