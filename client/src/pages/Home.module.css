@@ -33,10 +33,19 @@
 .row::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
 /* Fixed-width slot for the shared MediaCard inside a horizontal-scroll row
-   (it's intrinsically 100%-width to also work in LibraryDetail's grid). */
-.cardSlot { flex: 0 0 150px; }
+   (it's intrinsically 100%-width to also work in LibraryDetail's grid).
+   width + min-width + max-width alongside flex-basis so the size is
+   unambiguous regardless of flex/width precedence — every card in the row
+   ends up pixel-identical instead of shrink/grow-negotiated. */
+.cardSlot {
+  flex: 0 0 150px;
+  width: 150px;
+  min-width: 150px;
+  max-width: 150px;
+  box-sizing: border-box;
+}
 @media (max-width: 720px) {
-  .cardSlot { flex-basis: 120px; }
+  .cardSlot { flex-basis: 120px; width: 120px; min-width: 120px; max-width: 120px; }
 }
 
 /* ── Media card ──────────────────────────────────────────────────────────── */
