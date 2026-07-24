@@ -307,11 +307,15 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     hlsRef.current = null
 
     if (src.type === 'application/x-mpegurl') {
-      // Safari/iOS play HLS natively and hls.js explicitly recommends
-      // preferring that over attaching hls.js when it's available.
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = src.src
-      } else if (Hls.isSupported()) {
+      // Always prefer hls.js over native HLS, even on Safari/iOS where the
+      // browser could technically play it natively — every playlist/segment
+      // endpoint here requires a Bearer auth header, which native <video src>
+      // has no mechanism to send at all (only the top-level manifest URL
+      // carries a ?token= fallback). hls.js's xhrSetup reliably attaches
+      // the header to every request it makes (manifest, sub-playlists,
+      // segments); native playback would silently 401 on segment fetches
+      // and feed the resulting JSON error body to the demuxer.
+      if (Hls.isSupported()) {
         const token = localStorage.getItem('nexus_token')
         const hls = new Hls({
           // Our API holds the playlist request open for up to 20s while
@@ -327,11 +331,17 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           },
         })
         hls.on(Hls.Events.ERROR, (_evt, data) => {
-          if (data.fatal) handlePlayerError(data.details ?? data.type)
+          console.error('[Player] hls.js error:', data)
+          if (data.fatal) handlePlayerError(`${data.type}: ${data.details}`)
         })
         hls.loadSource(src.src)
         hls.attachMedia(video)
         hlsRef.current = hls
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Only as a last resort when hls.js genuinely can't run in this
+        // browser — segment auth will only work if the server-side token
+        // fallback below covers every URL the manifest references.
+        video.src = src.src
       } else {
         setError('HLS playback is not supported in this browser')
       }
@@ -525,7 +535,16 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   }
 
   function handlePlayerError(detail) {
-    console.error('[Player] error:', detail)
+    const video = videoRef.current
+    // Log everything available — readyState/networkState/currentSrc pin down
+    // whether this was a native demux failure vs. an hls.js-level error, and
+    // which URL it actually happened on, without needing to reproduce live.
+    console.error('[Player] error:', detail, {
+      readyState:   video?.readyState,
+      networkState: video?.networkState,
+      currentSrc:   video?.currentSrc,
+      mode, src,
+    })
     const msg = typeof detail === 'string' ? detail : (detail?.message ?? 'stream failed to load')
     setError(msg)
   }
