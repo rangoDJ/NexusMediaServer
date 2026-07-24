@@ -160,6 +160,24 @@ export default function Libraries() {
     }
   }
 
+  // Re-fetches TMDB metadata (posters, plot, ratings) for every item,
+  // including ones that never matched at scan time — e.g. because no TMDB
+  // API key was configured yet. A scan alone never re-touches metadata on
+  // existing items (by design — see services/scanner.js), so this is the
+  // only way to backfill it after the fact short of re-adding the library.
+  async function refreshMetadata() {
+    try {
+      await api.post('/tasks/refresh-metadata/run')
+      addToast('Metadata refresh started — see Settings → Scheduled Tasks for progress')
+    } catch (err) {
+      if (err.response?.status === 409) {
+        addToast('Metadata refresh is already running', 'neutral')
+      } else {
+        addToast(`Failed to start metadata refresh: ${err.response?.data?.error ?? err.message}`, 'error')
+      }
+    }
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   if (loading) return <LibrariesSkeleton />
@@ -175,14 +193,25 @@ export default function Libraries() {
             {libraries.reduce((s, l) => s + (l.item_count ?? 0), 0).toLocaleString()} items
           </p>
         </div>
-        {isAdmin && libraries.length > 1 && (
-          <button
-            className={styles.scanAllBtn}
-            onClick={triggerScanAll}
-            disabled={libraries.some(l => l.scan_status === 'scanning')}
-          >
-            Scan All
-          </button>
+        {isAdmin && libraries.length > 0 && (
+          <div className={styles.headerActions}>
+            {libraries.length > 1 && (
+              <button
+                className={styles.scanAllBtn}
+                onClick={triggerScanAll}
+                disabled={libraries.some(l => l.scan_status === 'scanning')}
+              >
+                Scan All
+              </button>
+            )}
+            <button
+              className={styles.scanAllBtn}
+              onClick={refreshMetadata}
+              title="Re-fetch TMDB metadata for every item — use this after adding/fixing your TMDB API key"
+            >
+              Refresh Metadata
+            </button>
+          </div>
         )}
       </div>
 

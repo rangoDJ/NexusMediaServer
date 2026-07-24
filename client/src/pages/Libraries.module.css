@@ -27,7 +27,13 @@
   margin: 0;
 }
 
-/* ── Scan All button ────────────────────────────────────────────────────────── */
+/* ── Header actions ─────────────────────────────────────────────────────────── */
+
+.headerActions {
+  display: flex;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
 
 .scanAllBtn {
   flex-shrink: 0;
