@@ -284,3 +284,177 @@
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.6);
 }
+
+/* ── Fade shared by the top controls row and the bottom control bar ────── */
+.controlsHidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Center play button ──────────────────────────────────────────────── */
+.centerPlayBtn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0 0 0 4px; /* optically center the ▶ glyph */
+  transition: background 0.15s, transform 0.15s;
+}
+.centerPlayBtn:hover {
+  background: rgba(0, 0, 0, 0.8);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+/* ── Buffering spinner ───────────────────────────────────────────────── */
+.bufferingSpinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+  width: 44px;
+  height: 44px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  pointer-events: none;
+}
+
+/* ── Bottom control bar ──────────────────────────────────────────────── */
+.controlBar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  padding: 28px 16px 12px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.4) 60%, transparent 100%);
+  transition: opacity 0.2s;
+}
+
+.seekBar {
+  position: relative;
+  padding: 10px 0;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.seekTrack {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  overflow: visible;
+}
+
+.seekBuffered {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 2px;
+}
+
+.seekFill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  background: var(--accent, #7b5ea7);
+  border-radius: 2px;
+}
+
+.seekThumb {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent, #7b5ea7);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+  transform: translate(-50%, -50%);
+}
+
+/* ── Trickplay scrub preview ─────────────────────────────────────────── */
+.trickplayPreview {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+.trickplayTime {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.75);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.controlRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.controlBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.controlBtn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.volumeWrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.volumeSlider {
+  width: 70px;
+  accent-color: var(--accent, #7b5ea7);
+  cursor: pointer;
+}
+
+.timeText {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+  white-space: nowrap;
+}

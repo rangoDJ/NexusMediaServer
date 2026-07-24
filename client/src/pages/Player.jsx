@@ -1,8 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { MediaPlayer, MediaProvider, Track, useMediaRemote } from '@vidstack/react'
-import { defaultLayoutIcons, DefaultVideoLayout } from '@vidstack/react/player/layouts/default'
-import '@vidstack/react/player/styles/default/theme.css'
-import '@vidstack/react/player/styles/default/layouts/video.css'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import Hls from 'hls.js'
 import { api } from '../api/client.js'
 import styles from './Player.module.css'
 
@@ -20,7 +17,7 @@ const QUALITY_PRESETS = [
 
 const DEFAULT_QUALITY = 'auto'
 
-// MIME for vidstack's `src.type` when direct-playing
+// MIME for native <video src type=...> when direct-playing
 const MIME_BY_CONTAINER = {
   mp4:  'video/mp4',
   m4v:  'video/mp4',
@@ -29,77 +26,144 @@ const MIME_BY_CONTAINER = {
   mkv:  'video/x-matroska',
 }
 
+// How far past the buffered end a seek target can be before we give up on
+// native in-buffer seeking and restart the transcode at that position.
+// Within this window the transcoder (running at 2-4x real-time) naturally
+// catches up.
+const SEEK_RESTART_THRESHOLD_SECS = 30
+
 function formatBitrate(kbps) {
   if (!kbps) return '—'
   return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} Kbps`
 }
 
+function formatTime(secs) {
+  if (secs == null || !isFinite(secs) || secs < 0) return '0:00'
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = Math.floor(secs % 60)
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** Parse the standard WebVTT-with-media-fragments trickplay format
+ *  ("HH:MM:SS.mmm --> HH:MM:SS.mmm" cues, each pointing at
+ *  "trickplay.jpg#xywh=x,y,w,h") into a flat array of sprite regions. */
+function parseTrickplayVtt(text) {
+  const TIME_RE = /(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/
+  const XYWH_RE = /xywh=(\d+),(\d+),(\d+),(\d+)/
+  const toSecs = (h, m, s, ms) => (+h) * 3600 + (+m) * 60 + (+s) + (+ms) / 1000
+
+  const cues = []
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const lines = block.trim().split('\n')
+    const timeLine = lines.find(l => TIME_RE.test(l))
+    const xywhLine = lines.find(l => XYWH_RE.test(l))
+    if (!timeLine || !xywhLine) continue
+    const t = timeLine.match(TIME_RE)
+    const x = xywhLine.match(XYWH_RE)
+    cues.push({
+      start: toSecs(t[1], t[2], t[3], t[4]),
+      end:   toSecs(t[5], t[6], t[7], t[8]),
+      x: +x[1], y: +x[2], w: +x[3], h: +x[4],
+    })
+  }
+  return cues
+}
+
 export default function Player({ mediaItemId, episodeId, title, onEnded }) {
-  const playerRef              = useRef(null)
-  const remote                 = useMediaRemote(playerRef)
-  const lastSaveRef            = useRef(0)
-  const resumeFromRef          = useRef(0)
-  const menuRef                = useRef(null)
-  // Trickplay thumbnail URL (WebVTT) — null when not available
-  const [trickplayUrl, setTrickplayUrl] = useState(null)
+  const wrapRef   = useRef(null)
+  const videoRef  = useRef(null)
+  const hlsRef    = useRef(null) // current hls.js instance, if any
+  const lastSaveRef   = useRef(0)
+  const resumeFromRef = useRef(0)
+  const menuRef        = useRef(null) // quality menu — outside-click detection
+  const subtitleMenuRef = useRef(null)
+  const hideControlsTimerRef = useRef(null)
+
+  // Trickplay sprite cues — [{start, end, x, y, w, h}], absolute file time
+  const [trickplayCues, setTrickplayCues] = useState([])
+  const [trickplayUrl, setTrickplayUrl]   = useState(null) // sprite jpg URL
   // Intro/credits segment windows for this episode
   const [segments, setSegments] = useState([])
-  // Whether the "Skip Intro" button is visible
   const [showSkipIntro, setShowSkipIntro] = useState(false)
-  // Tracks the src object currently given to <MediaPlayer>. Used to detect
-  // whether a stream is already playing when a quality change is requested so
-  // we can show a switching overlay instead of blanking the screen.
-  const activeSrcRef           = useRef(null)
-  // Absolute byte-offset (in seconds) where the current HLS stream begins
-  // inside the source file. 0 for streams that start at the beginning; > 0
-  // after a server-side seek restart.
-  const currentStreamOffsetRef = useRef(0)
-  // Set by onSeeked when the user seeks far beyond the buffer. start() consumes
-  // this on its next run and passes it as start_time_secs to the transcoder.
-  const nextSeekOffsetRef      = useRef(0)
-  // Mirrors the active transcoder session ID so start() can DELETE the old
-  // session immediately (before the new one starts) without waiting for React
-  // state to propagate. Using a ref rather than the sessionId state value is
-  // necessary because the state value in a useEffect closure is stale when
-  // quality changes fire in quick succession.
-  const liveSessionRef         = useRef(null)
 
-  const [src, setSrc]                 = useState(null)
-  const [sessionId, setSessionId]     = useState(null) // null => direct play (no transcode)
-  const [seekTo, setSeekTo]           = useState(0)
+  // Tracks the src object currently attached. Used to detect whether a
+  // stream is already playing when a quality change is requested so we can
+  // show a switching overlay instead of blanking the screen.
+  const activeSrcRef = useRef(null)
+  // Absolute offset (seconds) where the current HLS stream begins inside
+  // the source file. 0 unless a server-side seek restart shifted it.
+  const currentStreamOffsetRef = useRef(0)
+  // Set when the user seeks far beyond the buffer; start() consumes this on
+  // its next run and passes it as start_time_secs to the transcoder.
+  const nextSeekOffsetRef = useRef(0)
+  // Mirrors the active transcoder session ID so start() can DELETE the old
+  // session immediately without waiting for React state to propagate.
+  const liveSessionRef = useRef(null)
+
+  const [src, setSrc]                 = useState(null) // { src, type }
+  const [sessionId, setSessionId]     = useState(null) // null => direct play
+  const [seekTo, setSeekToState]      = useState(0)     // stream-relative resume target
   const [error, setError]             = useState(null)
   const [mode, setMode]               = useState(null) // 'direct' | 'abr' | 'transcode'
-  const [tracks, setTracks]           = useState([])   // subtitle tracks for vidstack
-  const [playbackInfo, setPlaybackInfo] = useState(null) // file codec/resolution info
+  const [tracks, setTracks]           = useState([])   // subtitle tracks
+  const [activeTrackIndex, setActiveTrackIndex] = useState(-1) // -1 = off
+  const [playbackInfo, setPlaybackInfo] = useState(null)
   const [quality, setQuality]         = useState(() =>
     localStorage.getItem('nexus_quality') ?? DEFAULT_QUALITY
   )
-  const [menuOpen, setMenuOpen]       = useState(false)
+  const [menuOpen, setMenuOpen]               = useState(false)
+  const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false)
   const [retryTrigger, setRetryTrigger] = useState(0)
   const [showStats, setShowStats]     = useState(false)
-  const [statsData, setStatsData]     = useState({})   // buffer + transcoder metrics
-  const [switching, setSwitching]     = useState(false) // true while a quality change is in-flight
+  const [statsData, setStatsData]     = useState({})
+  const [switching, setSwitching]     = useState(false)
+
+  // ── Native playback state (replaces vidstack's store) ────────────────────
+  const [isPlaying, setIsPlaying]     = useState(false)
+  const [isBuffering, setIsBuffering] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)   // stream-relative
+  const [duration, setDuration]       = useState(0)   // stream-relative (native)
+  const [bufferedEnd, setBufferedEnd] = useState(0)    // stream-relative
+  const [volume, setVolume]           = useState(() => Number(localStorage.getItem('nexus_volume') ?? 1))
+  const [muted, setMuted]             = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [controlsVisible, setControlsVisible] = useState(true)
+  // While the user is dragging the seek bar: freeze the displayed position at
+  // the drag target instead of the actual (stale) video.currentTime.
+  const [scrubTime, setScrubTime]     = useState(null) // absolute seconds, or null when not scrubbing
+  const [hoverPreview, setHoverPreview] = useState(null) // { x: pixels, time: absolute } | null
 
   const progressPath = episodeId
     ? `/media/episode/${episodeId}/progress`
     : `/media/${mediaItemId}/progress`
 
-  // Load trickplay VTT and (for episodes) intro segments when item changes
+  // The seek bar's true total length — server-known runtime, NOT whatever
+  // hls.js currently reports (which for a growing transcode is only the
+  // sum of segments produced so far). This is the actual fix for the old
+  // "red line" bug: the UI never asks the player for duration at all.
+  const absoluteDuration = playbackInfo?.file?.duration_secs ?? (currentStreamOffsetRef.current + duration)
+  const absoluteCurrentTime = scrubTime ?? (currentStreamOffsetRef.current + currentTime)
+  const absoluteBufferedEnd = currentStreamOffsetRef.current + bufferedEnd
+
+  // ── Load trickplay + intro/credits segments when item changes ────────────
   useEffect(() => {
     const token = localStorage.getItem('nexus_token')
     const base = episodeId
       ? `/api/v1/media/episode/${episodeId}`
       : `/api/v1/media/${mediaItemId}`
 
-    // Trickplay: check if available, build authenticated URL
-    fetch(`${base}/trickplay.vtt?token=${encodeURIComponent(token)}`, { method: 'HEAD' })
-      .then(r => {
-        if (r.ok) setTrickplayUrl(`${base}/trickplay.vtt?token=${encodeURIComponent(token)}`)
-        else setTrickplayUrl(null)
+    const vttUrl = `${base}/trickplay.vtt?token=${encodeURIComponent(token)}`
+    fetch(vttUrl)
+      .then(r => r.ok ? r.text() : Promise.reject())
+      .then(text => {
+        setTrickplayCues(parseTrickplayVtt(text))
+        setTrickplayUrl(`${base}/trickplay.jpg?token=${encodeURIComponent(token)}`)
       })
-      .catch(() => setTrickplayUrl(null))
+      .catch(() => { setTrickplayCues([]); setTrickplayUrl(null) })
 
-    // Segments: only for episodes
     if (episodeId) {
       api.get(`/media/episode/${episodeId}/segments`)
         .then(r => setSegments(r.data ?? []))
@@ -110,29 +174,20 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     setShowSkipIntro(false)
   }, [mediaItemId, episodeId])
 
-  // Start / restart playback.
+  // ── Start / restart playback ──────────────────────────────────────────────
   // - quality === 'auto'  → prefer direct play, fall back to transcoded HLS
   // - quality === preset  → force transcode at that bitrate
-  // - nextSeekOffsetRef   → non-zero means restart from that absolute file position
+  // - nextSeekOffsetRef   → non-zero means restart from that absolute position
   useEffect(() => {
     let cancelled = false
 
     async function start() {
-      // Kill the previous transcoder session immediately so only one ffmpeg
-      // process runs at a time. Using liveSessionRef (not sessionId state)
-      // guarantees we always have the latest value even when quality changes
-      // fire faster than React can flush state updates.
       const prevSession = liveSessionRef.current
       liveSessionRef.current = null
       if (prevSession) api.delete(`/stream/${prevSession}`).catch(() => {})
 
-      // If a stream is already active, show a switching overlay instead of
-      // blanking the screen while we await the new playlist URL. For a fresh
-      // start (first load, after error, after unmount) go straight to black.
       const wasPlaying = activeSrcRef.current !== null
       if (wasPlaying) {
-        // Save progress against the stream that's about to be replaced before
-        // currentStreamOffsetRef is updated below.
         saveProgress()
         setSwitching(true)
       } else {
@@ -142,21 +197,14 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
       setError(null)
 
       try {
-        // Consume any server-side seek target. onSeeked sets this when the user
-        // seeks far beyond the transcoded buffer; 0 means "start at beginning".
         const startTimeSecs = nextSeekOffsetRef.current
         nextSeekOffsetRef.current = 0
         currentStreamOffsetRef.current = startTimeSecs
 
-        // Resolve stream-relative resume position for the initial seekTo.
         let savedPos = 0
         if (startTimeSecs > 0) {
-          // Seek restart: new stream begins exactly at startTimeSecs, so
-          // stream-relative position is 0 — no in-stream seek needed.
           savedPos = 0
         } else if (resumeFromRef.current > 0) {
-          // Quality switch: resumeFromRef holds the absolute position; adjust
-          // for the new stream's offset (0 for non-seek restarts).
           savedPos = Math.max(0, resumeFromRef.current - startTimeSecs)
           resumeFromRef.current = 0
         } else {
@@ -169,8 +217,6 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
         const preset = QUALITY_PRESETS.find(p => p.id === quality) ?? QUALITY_PRESETS[0]
 
-        // Always fetch playback-info — gives us subtitle tracks regardless of
-        // direct vs transcode choice.
         let pi = null
         try { pi = await fetchPlaybackInfo() } catch {}
 
@@ -179,14 +225,12 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           setPlaybackInfo(pi)
         }
 
-        // Helper: commit a resolved src and clear the switching state.
         function commitSrc(newSrc) {
           activeSrcRef.current = newSrc
           setSrc(newSrc)
           setSwitching(false)
         }
 
-        // Try direct play first when on Auto
         if (preset.id === 'auto' && pi?.playback?.direct_play && pi?.playback?.direct_play_url) {
           const token = localStorage.getItem('nexus_token')
           const url   = `${pi.playback.direct_play_url}&token=${encodeURIComponent(token)}`
@@ -194,14 +238,11 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           if (cancelled) return
           setMode('direct')
           setSessionId(null)
-          if (savedPos > 5) setSeekTo(savedPos)
+          if (savedPos > 5) setSeekToState(savedPos)
           commitSrc({ src: url, type })
           return
         }
 
-        // Transcode path. Auto → request ABR so hls.js can switch variants
-        // based on measured bandwidth. Manual quality → single variant at
-        // the chosen bitrate.
         const params = preset.id === 'auto'
           ? { codec: 'h264', resolution: '1080p', variants: true }
           : { codec: 'h264', resolution: preset.resolution, bitrate: preset.bitrate }
@@ -210,26 +251,16 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           media_item_id: mediaItemId ?? undefined,
           episode_id:    episodeId ?? undefined,
           ...params,
-          // Non-zero only when restarting after a user seek beyond the buffer.
-          // The transcoder will pass this as ffmpeg's -ss input option so the
-          // new HLS stream begins at the requested file position.
           ...(startTimeSecs > 0 ? { start_time_secs: startTimeSecs } : {}),
         })
         if (cancelled) {
-          // Another quality change fired while we were awaiting the API.
-          // The session we just created will never be used — kill it now so
-          // the ffmpeg process doesn't run orphaned until the idle janitor
-          // eventually cleans it up (60 s window).
           api.delete(`/stream/${data.session_id}`).catch(() => {})
           return
         }
         liveSessionRef.current = data.session_id
         setMode(data.abr ? 'abr' : 'transcode')
         setSessionId(data.session_id)
-        if (savedPos > 5) setSeekTo(savedPos)
-        // Embed the JWT as ?token= so the very first manifest request is
-        // authenticated. hls.js races the xhrSetup callback on its initial
-        // fetch, causing a 401 if only the Authorization header approach is used.
+        if (savedPos > 5) setSeekToState(savedPos)
         const hlsToken = localStorage.getItem('nexus_token')
         const hlsUrl   = `${data.playlist_url}?token=${encodeURIComponent(hlsToken)}`
         commitSrc({ src: hlsUrl, type: 'application/x-mpegurl' })
@@ -254,8 +285,6 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     return data
   }
 
-  // Map server subtitle_tracks into vidstack <Track> props. Token goes into
-  // the URL since <track> elements can't add Authorization headers.
   function buildTrackList(pi) {
     if (!pi?.subtitle_tracks?.length) return []
     const token = localStorage.getItem('nexus_token')
@@ -269,50 +298,137 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     }))
   }
 
-  // Close quality menu on outside click
+  // ── hls.js lifecycle — attach/detach whenever src changes ─────────────────
   useEffect(() => {
-    if (!menuOpen) return
+    const video = videoRef.current
+    if (!video || !src) return
+
+    hlsRef.current?.destroy()
+    hlsRef.current = null
+
+    if (src.type === 'application/x-mpegurl') {
+      // Safari/iOS play HLS natively and hls.js explicitly recommends
+      // preferring that over attaching hls.js when it's available.
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src.src
+      } else if (Hls.isSupported()) {
+        const token = localStorage.getItem('nexus_token')
+        const hls = new Hls({
+          // Our API holds the playlist request open for up to 20s while
+          // ffmpeg starts producing segments — hls.js's 10s default fires
+          // before the server responds, causing a spurious network-timeout.
+          manifestLoadingTimeOut:    30_000,
+          manifestLoadingMaxRetry:   2,
+          manifestLoadingRetryDelay: 500,
+          levelLoadingTimeOut:       25_000,
+          fragLoadingTimeOut:        20_000,
+          xhrSetup(xhr) {
+            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+          },
+        })
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal) handlePlayerError(data.details ?? data.type)
+        })
+        hls.loadSource(src.src)
+        hls.attachMedia(video)
+        hlsRef.current = hls
+      } else {
+        setError('HLS playback is not supported in this browser')
+      }
+    } else {
+      video.src = src.src
+    }
+
+    return () => {
+      hlsRef.current?.destroy()
+      hlsRef.current = null
+    }
+  }, [src])
+
+  // ── Volume / mute — imperative sync (native properties, not JSX props) ───
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    video.volume = volume
+    video.muted = muted
+  }, [volume, muted, src])
+
+  // ── Subtitle track selection — imperative sync via TextTrack API ─────────
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    for (let i = 0; i < video.textTracks.length; i++) {
+      video.textTracks[i].mode = i === activeTrackIndex ? 'showing' : 'disabled'
+    }
+  }, [activeTrackIndex, tracks])
+
+  // Default subtitle track once tracks load for a new item
+  useEffect(() => {
+    const defaultIdx = tracks.findIndex(t => t.default)
+    setActiveTrackIndex(defaultIdx)
+  }, [tracks])
+
+  // ── Fullscreen tracking ────────────────────────────────────────────────
+  useEffect(() => {
+    function onFsChange() {
+      setIsFullscreen(document.fullscreenElement === wrapRef.current)
+    }
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
+  // ── Close menus on outside click ──────────────────────────────────────────
+  useEffect(() => {
+    if (!menuOpen && !subtitleMenuOpen) return
     function onClick(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+      if (menuOpen && menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+      if (subtitleMenuOpen && subtitleMenuRef.current && !subtitleMenuRef.current.contains(e.target)) setSubtitleMenuOpen(false)
     }
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
-  }, [menuOpen])
+  }, [menuOpen, subtitleMenuOpen])
 
-  // Poll buffer level and (for active transcode sessions) encoding metrics
-  // every 2s while the stats overlay is open.
+  // ── Auto-hide controls while playing ──────────────────────────────────────
+  const wakeControls = useCallback(() => {
+    setControlsVisible(true)
+    clearTimeout(hideControlsTimerRef.current)
+    hideControlsTimerRef.current = setTimeout(() => {
+      if (isPlaying) setControlsVisible(false)
+    }, 3000)
+  }, [isPlaying])
+
+  useEffect(() => {
+    if (!isPlaying) { setControlsVisible(true); clearTimeout(hideControlsTimerRef.current); return }
+    wakeControls()
+    return () => clearTimeout(hideControlsTimerRef.current)
+  }, [isPlaying, wakeControls])
+
+  // ── Stats overlay polling ──────────────────────────────────────────────
   useEffect(() => {
     if (!showStats) { setStatsData({}); return }
 
     let cancelled = false
 
     function readBuffer() {
-      const player = playerRef.current
-      if (!player) return null
-      const ct = player.currentTime ?? 0
-      const buf = player.buffered
+      const video = videoRef.current
+      if (!video) return null
+      const ct = video.currentTime ?? 0
+      const buf = video.buffered
       if (!buf || buf.length === 0) return null
-      // Find the buffered range that contains (or starts at/before) current time
       for (let i = buf.length - 1; i >= 0; i--) {
-        if (buf.start(i) <= ct + 0.1) {
-          return Math.max(0, buf.end(i) - ct)
-        }
+        if (buf.start(i) <= ct + 0.1) return Math.max(0, buf.end(i) - ct)
       }
       return null
     }
 
     async function tick() {
       if (cancelled) return
-      const bufferAhead = readBuffer()
-      setStatsData(prev => ({ ...prev, bufferAhead }))
-
+      setStatsData(prev => ({ ...prev, bufferAhead: readBuffer() }))
       if (sessionId) {
         try {
           const { data } = await api.get(`/stream/${sessionId}/metrics`)
           if (!cancelled) setStatsData(prev => ({ ...prev, ...data }))
-        } catch {
-          // transcoder metrics are best-effort; don't surface errors
-        }
+        } catch {}
       }
     }
 
@@ -324,109 +440,54 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   function changeQuality(newId) {
     setMenuOpen(false)
     if (newId === quality) return
-    const player = playerRef.current
-    // Store the ABSOLUTE position (stream offset + stream-relative time) so
-    // start() can seek to the same position in the new stream regardless of
-    // whether a server-side seek had shifted the stream's origin.
-    resumeFromRef.current = currentStreamOffsetRef.current + Math.floor(player?.currentTime ?? 0)
+    resumeFromRef.current = currentStreamOffsetRef.current + Math.floor(videoRef.current?.currentTime ?? 0)
     localStorage.setItem('nexus_quality', newId)
     setQuality(newId)
   }
 
-  // Attach JWT to hls.js segment/playlist requests (transcode mode only).
-  // Also extend the manifest / level loading timeout: our API holds the playlist
-  // request open for up to 20s while ffmpeg starts producing segments. The
-  // hls.js default of 10s fires before the server responds, causing a spurious
-  // "network timeout" error. 30s gives comfortable headroom.
-  function onProviderChange(provider) {
-    if (provider?.type === 'hls') {
-      const token = localStorage.getItem('nexus_token')
-      provider.config = {
-        ...provider.config,
-        manifestLoadingTimeOut:  30_000,
-        manifestLoadingMaxRetry: 2,
-        manifestLoadingRetryDelay: 500,
-        levelLoadingTimeOut:     25_000,
-        fragLoadingTimeOut:      20_000,
-        xhrSetup(xhr) {
-          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-        },
-      }
-    }
-  }
-
   function onCanPlay() {
-    if (seekTo > 0 && playerRef.current) {
-      playerRef.current.currentTime = seekTo
-      setSeekTo(0)
+    if (seekTo > 0 && videoRef.current) {
+      videoRef.current.currentTime = seekTo
+      setSeekToState(0)
     }
   }
 
-  // Transcoded HLS is served as a growing "event" playlist — hls.js's own
-  // duration is only the sum of segments ffmpeg has produced *so far*, not
-  // the real length of the file. Left alone, the seek bar collapses to a
-  // sliver representing a few seconds of buffer instead of the whole movie,
-  // and grows in real time as more gets transcoded (this is the "red line"
-  // the seek bar renders as). We know the true length from playback-info
-  // (ffprobe'd at scan time), so force it via the player's remote-control
-  // API — this only affects the UI's notion of duration, not what's
-  // actually seekable; real seeks beyond the buffer are handled separately
-  // by onMediaSeekRequest below, mirroring how Jellyfin's web client trusts
-  // server-known runtime over the HLS manifest's own claimed duration.
-  function applyTrueDuration() {
-    if (mode !== 'transcode' && mode !== 'abr') return
-    const fileDuration = playbackInfo?.file?.duration_secs
-    if (fileDuration == null) return
-    const streamDuration = Math.max(0, fileDuration - currentStreamOffsetRef.current)
-    if (streamDuration > 0) remote.changeDuration(streamDuration)
-  }
+  // Core seek primitive — everything (seek bar, skip intro, keyboard) goes
+  // through this. `absoluteTarget` is a position in the whole file. In-buffer
+  // targets seek natively; anything further ahead restarts the transcode at
+  // that exact position instead of stalling waiting for ffmpeg to catch up.
+  function seekToAbsolute(absoluteTarget) {
+    const video = videoRef.current
+    if (!video) return
+    const target = Math.max(0, absoluteTarget)
 
-  // Re-assert immediately when a new stream starts...
-  useEffect(() => { applyTrueDuration() }, [src, mode]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (mode === 'direct') {
+      video.currentTime = target
+      return
+    }
 
-  // ...and every time hls.js reports its own (smaller, still-growing) value,
-  // since it keeps firing native duration updates as new segments land.
-  function onDurationChange() {
-    applyTrueDuration()
-  }
-
-  // The scrub bar computes seek targets from the (now-correct, full-length)
-  // duration above, so this fires with the user's real intended position —
-  // unlike the native 'seeked' event below, which only sees whatever hls.js
-  // actually managed to seek to (silently clamped to the tiny buffered
-  // range for anything past what's been transcoded so far).
-  function onMediaSeekRequest(event) {
-    if (mode === 'direct' || !mode || switching) return
-    const requestedTime = event.detail
-    if (requestedTime == null) return
-    const player = playerRef.current
-    if (!player) return
-
-    const buf = player.buffered
-    let bufferedEnd = 0
+    const streamRelative = target - currentStreamOffsetRef.current
+    const buf = video.buffered
+    let bEnd = 0
     for (let i = 0; i < buf.length; i++) {
-      if (buf.start(i) <= requestedTime + 1) bufferedEnd = Math.max(bufferedEnd, buf.end(i))
+      if (buf.start(i) <= streamRelative + 1) bEnd = Math.max(bEnd, buf.end(i))
     }
 
-    if (requestedTime > bufferedEnd + 30) {
-      const absolutePos = currentStreamOffsetRef.current + Math.floor(requestedTime)
-      nextSeekOffsetRef.current = absolutePos
+    if (streamRelative <= bEnd + SEEK_RESTART_THRESHOLD_SECS && streamRelative >= 0) {
+      video.currentTime = streamRelative
+    } else {
+      nextSeekOffsetRef.current = Math.floor(target)
       setRetryTrigger(n => n + 1)
     }
   }
 
   function saveProgress() {
-    const player = playerRef.current
-    if (!player) return
-    // Absolute position accounts for server-side seek restarts: the stream may
-    // start partway through the file, so currentTime is relative to that offset.
-    const pos = currentStreamOffsetRef.current + Math.floor(player.currentTime ?? 0)
-    // Use the authoritative file duration from playback-info when available.
-    // Fallback: offset + stream duration equals the file duration once the
-    // stream finishes (since ffmpeg encodes to the end of file).
+    const video = videoRef.current
+    if (!video) return
+    const pos = currentStreamOffsetRef.current + Math.floor(video.currentTime ?? 0)
     const dur = Math.floor(
       playbackInfo?.file?.duration_secs ??
-      (currentStreamOffsetRef.current + (player.duration ?? 0))
+      (currentStreamOffsetRef.current + (video.duration ?? 0))
     )
     if (!dur || pos < 2) return
     const completed = pos / dur > 0.9
@@ -434,42 +495,46 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   }
 
   function onTimeUpdate() {
+    const video = videoRef.current
+    if (!video) return
+    setCurrentTime(video.currentTime ?? 0)
+
     const now = Date.now()
     if (now - lastSaveRef.current > 15_000) {
       lastSaveRef.current = now
       saveProgress()
     }
-    // Drive Skip Intro button visibility
-    const absoluteTime = currentStreamOffsetRef.current + (playerRef.current?.currentTime ?? 0)
+    const absoluteTime = currentStreamOffsetRef.current + (video.currentTime ?? 0)
     const introSeg = segments.find(s => s.type === 'intro')
     if (introSeg) {
       setShowSkipIntro(absoluteTime >= introSeg.start_secs && absoluteTime < introSeg.end_secs)
     }
   }
 
-  // Surface hls.js / native player errors as a visible message instead of
-  // leaving the user with an infinite spinning circle.
-  // Vidstack puts the message directly on the event object (not under detail).
-  // We probe multiple paths in order to handle the different shapes hls.js,
-  // HTMLMediaElement, and network errors produce.
-  function handlePlayerError(event) {
-    console.error('[Player] error event:', event, 'detail:', event?.detail)
-    const detail = event?.detail
-    const msg =
-      event?.message ??
-      detail?.message ??
-      detail?.error?.message ??
-      detail?.nativeEvent?.message ??
-      (typeof detail === 'string' ? detail : null) ??
-      'stream failed to load'
+  function onDurationChange() {
+    setDuration(videoRef.current?.duration || 0)
+  }
+
+  function onProgress() {
+    const video = videoRef.current
+    if (!video) return
+    const buf = video.buffered
+    let end = 0
+    for (let i = 0; i < buf.length; i++) end = Math.max(end, buf.end(i))
+    setBufferedEnd(end)
+  }
+
+  function handlePlayerError(detail) {
+    console.error('[Player] error:', detail)
+    const msg = typeof detail === 'string' ? detail : (detail?.message ?? 'stream failed to load')
     setError(msg)
   }
 
   function handleEnded() {
-    const player = playerRef.current
+    const video = videoRef.current
     const dur = Math.floor(
       playbackInfo?.file?.duration_secs ??
-      (currentStreamOffsetRef.current + (player?.duration ?? 0))
+      (currentStreamOffsetRef.current + (video?.duration ?? 0))
     )
     if (dur > 0) {
       api.put(progressPath, { position_secs: dur, duration_secs: dur, completed: true }).catch(() => {})
@@ -477,47 +542,102 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     onEnded?.()
   }
 
-  // When the user seeks during a transcoded stream, detect seeks that go
-  // significantly beyond the buffered range — those would cause an infinite
-  // stall while hls.js waits for ffmpeg to produce the required segments.
-  // Instead, restart the transcode from the exact seek position (server-side
-  // seeking via ffmpeg's -ss input option).
-  function onSeeked() {
-    // Direct play handles seeking natively via HTTP range requests.
-    // Skip if we're already in the middle of a quality/seek switch.
-    if (mode === 'direct' || !mode || switching) return
-    const player = playerRef.current
-    if (!player) return
-
-    const seekTarget = player.currentTime
-
-    // Find the furthest buffered end that brackets the seek target.
-    const buf = player.buffered
-    let bufferedEnd = 0
-    for (let i = 0; i < buf.length; i++) {
-      // +1s tolerance for small floating-point gaps in the buffer.
-      if (buf.start(i) <= seekTarget + 1) {
-        bufferedEnd = Math.max(bufferedEnd, buf.end(i))
-      }
-    }
-
-    // Restart the transcode if the seek target is more than 30 s past the
-    // current buffer. Within 30 s the transcoder will naturally catch up
-    // (typically running at 2–4× real-time speed).
-    if (seekTarget > bufferedEnd + 30) {
-      const absolutePos = currentStreamOffsetRef.current + Math.floor(seekTarget)
-      nextSeekOffsetRef.current = absolutePos
-      setRetryTrigger(n => n + 1)
-    }
+  // ── Play/pause/mute/fullscreen controls ───────────────────────────────────
+  function togglePlay() {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) video.play().catch(() => {})
+    else video.pause()
   }
 
-  // Final cleanup on component unmount only. Quality-switch session teardown
-  // is handled directly inside start() via liveSessionRef so the old ffmpeg
-  // is killed before the new one starts (not after). This effect only covers
-  // the "user closes the player" case.
+  function toggleMute() {
+    setMuted(m => !m)
+  }
+
+  function onVolumeChange(e) {
+    const v = Number(e.target.value)
+    setVolume(v)
+    setMuted(v === 0)
+    localStorage.setItem('nexus_volume', String(v))
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+    else wrapRef.current?.requestFullscreen().catch(() => {})
+  }
+
+  // ── Seek bar interaction ───────────────────────────────────────────────
+  function seekBarTimeFromEvent(e, barEl) {
+    const rect = barEl.getBoundingClientRect()
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    return frac * absoluteDuration
+  }
+
+  function onSeekBarPointerMove(e) {
+    const time = seekBarTimeFromEvent(e, e.currentTarget)
+    setHoverPreview({ x: e.clientX - e.currentTarget.getBoundingClientRect().left, time })
+    if (scrubTime != null) setScrubTime(time)
+  }
+
+  function onSeekBarPointerDown(e) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setScrubTime(seekBarTimeFromEvent(e, e.currentTarget))
+  }
+
+  function onSeekBarPointerUp() {
+    if (scrubTime == null) return
+    const target = scrubTime
+    setScrubTime(null)
+    seekToAbsolute(target)
+  }
+
+  function onSeekBarLeave() {
+    setHoverPreview(null)
+  }
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (!wrapRef.current) return
+      // Ignore when focus is in an input/textarea/menu elsewhere on the page
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return
+
+      switch (e.key) {
+        case ' ':
+        case 'k':
+          e.preventDefault()
+          togglePlay()
+          break
+        case 'ArrowLeft':
+          e.preventDefault()
+          seekToAbsolute(absoluteCurrentTime - 10)
+          break
+        case 'ArrowRight':
+          e.preventDefault()
+          seekToAbsolute(absoluteCurrentTime + 10)
+          break
+        case 'f':
+          e.preventDefault()
+          toggleFullscreen()
+          break
+        case 'm':
+          e.preventDefault()
+          toggleMute()
+          break
+        default:
+          break
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [absoluteCurrentTime, mode])
+
+  // Final cleanup on unmount only.
   useEffect(() => {
     return () => {
       saveProgress()
+      hlsRef.current?.destroy()
       const s = liveSessionRef.current
       liveSessionRef.current = null
       if (s) api.delete(`/stream/${s}`).catch(() => {})
@@ -544,11 +664,22 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     mode === 'abr'       ? 'ABR'       :
     mode === 'transcode' ? 'Transcode' : null
 
+  const seekPct = absoluteDuration > 0 ? Math.min(100, (absoluteCurrentTime / absoluteDuration) * 100) : 0
+  const bufferedPct = absoluteDuration > 0 ? Math.min(100, (absoluteBufferedEnd / absoluteDuration) * 100) : 0
+
+  const hoverCue = hoverPreview && trickplayUrl
+    ? trickplayCues.find(c => hoverPreview.time >= c.start && hoverPreview.time < c.end)
+    : null
+
   return (
-    <div className={styles.wrap}>
-      {/* Top-right controls: stats toggle + quality picker */}
-      <div className={styles.topControls}>
-        {/* Stats toggle */}
+    <div
+      ref={wrapRef}
+      className={styles.wrap}
+      onMouseMove={wakeControls}
+      onClick={() => src && togglePlay()}
+    >
+      {/* Top-right controls: stats toggle + subtitle + quality pickers */}
+      <div className={`${styles.topControls} ${controlsVisible ? '' : styles.controlsHidden}`} onClick={e => e.stopPropagation()}>
         <button
           className={`${styles.statsBtn} ${showStats ? styles.statsBtnActive : ''}`}
           onClick={() => setShowStats(s => !s)}
@@ -562,7 +693,43 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           </svg>
         </button>
 
-        {/* Quality picker */}
+        {tracks.length > 0 && (
+          <div className={styles.qualityWrap} ref={subtitleMenuRef}>
+            <button
+              className={styles.statsBtn}
+              onClick={() => setSubtitleMenuOpen(o => !o)}
+              aria-label="Subtitles"
+              title="Subtitles"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
+                <rect x="5" y="14" width="6" height="2" fill="currentColor"/>
+                <rect x="13" y="14" width="6" height="2" fill="currentColor"/>
+              </svg>
+            </button>
+            {subtitleMenuOpen && (
+              <div className={styles.qualityMenu}>
+                <div className={styles.qualityMenuTitle}>Subtitles</div>
+                <button
+                  className={`${styles.qualityItem} ${activeTrackIndex === -1 ? styles.qualityActive : ''}`}
+                  onClick={() => { setActiveTrackIndex(-1); setSubtitleMenuOpen(false) }}
+                >
+                  <span>Off</span>
+                </button>
+                {tracks.map((t, i) => (
+                  <button
+                    key={t.src}
+                    className={`${styles.qualityItem} ${activeTrackIndex === i ? styles.qualityActive : ''}`}
+                    onClick={() => { setActiveTrackIndex(i); setSubtitleMenuOpen(false) }}
+                  >
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className={styles.qualityWrap} ref={menuRef}>
           <button
             className={styles.qualityBtn}
@@ -655,11 +822,8 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         </div>
       )}
 
-      {/* Show loading box only on a fresh start (no existing stream visible). */}
       {!src && !switching && <div className={styles.loadingBox}>Starting stream…</div>}
 
-      {/* Switching overlay — displayed on top of the old stream while the new
-          playlist URL is being fetched so the user never sees a blank screen. */}
       {switching && (
         <div className={styles.switchingOverlay}>
           <div className={styles.switchingSpinner} />
@@ -667,15 +831,14 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         </div>
       )}
 
-      {/* Skip Intro button — shown when playback is inside the intro window */}
       {showSkipIntro && src && (
         <button
           className={styles.skipIntroBtn}
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation()
             const introSeg = segments.find(s => s.type === 'intro')
-            const player = playerRef.current
-            if (!player || !introSeg) return
-            player.currentTime = introSeg.end_secs - currentStreamOffsetRef.current
+            if (!introSeg) return
+            seekToAbsolute(introSeg.end_secs)
             setShowSkipIntro(false)
           }}
         >
@@ -683,39 +846,99 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         </button>
       )}
 
+      {isBuffering && src && !switching && (
+        <div className={styles.bufferingSpinner} />
+      )}
+
+      {src && !isPlaying && !switching && !isBuffering && (
+        <button className={styles.centerPlayBtn} onClick={(e) => { e.stopPropagation(); togglePlay() }} aria-label="Play">
+          ▶
+        </button>
+      )}
+
       {src && (
-        <MediaPlayer
-          ref={playerRef}
-          title={title}
-          src={src}
+        <video
+          ref={videoRef}
           autoPlay
-          crossOrigin
+          crossOrigin="anonymous"
           playsInline
-          thumbnails={trickplayUrl ?? undefined}
-          onProviderChange={onProviderChange}
           onCanPlay={onCanPlay}
-          onDurationChange={onDurationChange}
-          onMediaSeekRequest={onMediaSeekRequest}
           onTimeUpdate={onTimeUpdate}
-          onSeeked={onSeeked}
+          onDurationChange={onDurationChange}
+          onProgress={onProgress}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onWaiting={() => setIsBuffering(true)}
+          onPlaying={() => setIsBuffering(false)}
           onEnded={handleEnded}
-          onError={handlePlayerError}
+          onError={() => handlePlayerError(videoRef.current?.error?.message)}
           style={{ width: '100%', height: '100%', backgroundColor: '#000' }}
         >
-          <MediaProvider>
-            {tracks.map((t, i) => (
-              <Track
-                key={`${t.src}-${i}`}
-                src={t.src}
-                kind={t.kind}
-                language={t.language}
-                label={t.label}
-                default={t.default}
+          {tracks.map((t) => (
+            <track key={t.src} src={t.src} kind={t.kind} srcLang={t.language} label={t.label} />
+          ))}
+        </video>
+      )}
+
+      {/* Custom control bar */}
+      {src && (
+        <div className={`${styles.controlBar} ${controlsVisible ? '' : styles.controlsHidden}`} onClick={e => e.stopPropagation()}>
+          <div
+            className={styles.seekBar}
+            onPointerDown={onSeekBarPointerDown}
+            onPointerMove={onSeekBarPointerMove}
+            onPointerUp={onSeekBarPointerUp}
+            onPointerLeave={onSeekBarLeave}
+          >
+            {hoverCue && trickplayUrl && (
+              <div
+                className={styles.trickplayPreview}
+                style={{
+                  left: `${hoverPreview.x}px`,
+                  width: hoverCue.w, height: hoverCue.h,
+                  backgroundImage: `url(${trickplayUrl})`,
+                  backgroundPosition: `-${hoverCue.x}px -${hoverCue.y}px`,
+                }}
+              >
+                <span className={styles.trickplayTime}>{formatTime(hoverPreview.time)}</span>
+              </div>
+            )}
+            <div className={styles.seekTrack}>
+              <div className={styles.seekBuffered} style={{ width: `${bufferedPct}%` }} />
+              <div className={styles.seekFill} style={{ width: `${seekPct}%` }} />
+              <div className={styles.seekThumb} style={{ left: `${seekPct}%` }} />
+            </div>
+          </div>
+
+          <div className={styles.controlRow}>
+            <button className={styles.controlBtn} onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'}>
+              {isPlaying ? '❚❚' : '▶'}
+            </button>
+
+            <div className={styles.volumeWrap}>
+              <button className={styles.controlBtn} onClick={toggleMute} aria-label={muted ? 'Unmute' : 'Mute'}>
+                {muted || volume === 0 ? '🔇' : '🔊'}
+              </button>
+              <input
+                className={styles.volumeSlider}
+                type="range" min="0" max="1" step="0.05"
+                value={muted ? 0 : volume}
+                onChange={onVolumeChange}
+                aria-label="Volume"
               />
-            ))}
-          </MediaProvider>
-          <DefaultVideoLayout icons={defaultLayoutIcons} />
-        </MediaPlayer>
+            </div>
+
+            <span className={styles.timeText}>
+              {formatTime(absoluteCurrentTime)} / {formatTime(absoluteDuration)}
+            </span>
+
+            <div style={{ flex: 1 }} />
+
+            <button className={styles.controlBtn} onClick={toggleFullscreen} aria-label="Fullscreen">
+              {isFullscreen ? '⤢' : '⛶'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
