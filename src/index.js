@@ -18,7 +18,7 @@ import usersRoutes from './routes/users.js'
 import settingsRoutes from './routes/settings.js'
 import serverRoutes from './routes/server.js'
 import { authMiddleware } from './middleware/auth.js'
-import { buildLoggerOptions } from './services/logging.js'
+import { buildLogger } from './services/logging.js'
 import { startHealthPoller } from './services/transcoderPool.js'
 import { loadPlugins, callHook } from './services/pluginLoader.js'
 import { TaskScheduler } from './services/taskScheduler.js'
@@ -41,8 +41,12 @@ import { analyzeIntrosTask } from './tasks/analyzeIntros.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
 
+// Built and validated *before* the Fastify constructor runs — pino.transport()
+// can throw synchronously (e.g. a container image that wasn't rebuilt with
+// the pino-roll dependency), and Fastify does not catch that; it would crash
+// the whole process before ever binding to a port. buildLogger() can't throw.
 const app = Fastify({
-  logger: buildLoggerOptions({
+  loggerInstance: buildLogger({
     logDir:       process.env.LOG_DIR ?? '/config/logs',
     fileBaseName: 'server',
     retentionDays: parseInt(process.env.LOG_RETENTION_DAYS ?? '3', 10),

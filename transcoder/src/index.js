@@ -6,13 +6,16 @@ import probeRoutes from './routes/probe.js'
 import subtitleRoutes from './routes/subtitles.js'
 import trickplayRoutes from './routes/trickplay.js'
 import analyzeRoutes from './routes/analyze.js'
-import { buildLoggerOptions } from './services/logging.js'
+import { buildLogger } from './services/logging.js'
 import { startIdleJanitor, stopIdleJanitor, startLogPruner, stopLogPruner, stopAllSessionsGracefully } from './services/transcoder.js'
 
 const HLS_BASE = process.env.HLS_OUTPUT_PATH ?? '/tmp/hls'
 
+// Built and validated *before* the Fastify constructor runs — see
+// src/services/logging.js on the main API side for why this can't just be
+// an options object passed straight to `logger:`.
 const app = Fastify({
-  logger: buildLoggerOptions({
+  loggerInstance: buildLogger({
     // A subdirectory of the HLS output volume, not a sibling — guarantees
     // persistence rides the same mounted volume (docker-compose.yml maps
     // hls_segments: only at HLS_OUTPUT_PATH itself).
