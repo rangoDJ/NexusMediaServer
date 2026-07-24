@@ -1,3 +1,4 @@
+import { join } from 'path'
 import Fastify from 'fastify'
 import axios from 'axios'
 import sessionRoutes from './routes/sessions.js'
@@ -5,9 +6,21 @@ import probeRoutes from './routes/probe.js'
 import subtitleRoutes from './routes/subtitles.js'
 import trickplayRoutes from './routes/trickplay.js'
 import analyzeRoutes from './routes/analyze.js'
-import { startIdleJanitor, stopIdleJanitor, stopAllSessionsGracefully } from './services/transcoder.js'
+import { buildLoggerOptions } from './services/logging.js'
+import { startIdleJanitor, stopIdleJanitor, startLogPruner, stopLogPruner, stopAllSessionsGracefully } from './services/transcoder.js'
 
-const app = Fastify({ logger: true })
+const HLS_BASE = process.env.HLS_OUTPUT_PATH ?? '/tmp/hls'
+
+const app = Fastify({
+  logger: buildLoggerOptions({
+    // A subdirectory of the HLS output volume, not a sibling — guarantees
+    // persistence rides the same mounted volume (docker-compose.yml maps
+    // hls_segments: only at HLS_OUTPUT_PATH itself).
+    logDir:       join(HLS_BASE, '_logs'),
+    fileBaseName: 'transcoder',
+    retentionDays: parseInt(process.env.LOG_RETENTION_DAYS ?? '3', 10),
+  }),
+})
 
 // All requests must carry the shared secret
 app.addHook('onRequest', async (request, reply) => {
@@ -45,6 +58,9 @@ await app.listen({ port, host: '0.0.0.0' })
 // Reap sessions whose API hasn't polled in 60s (lost DELETEs, crashed clients)
 startIdleJanitor()
 
+// Prune per-session ffmpeg logs older than LOG_RETENTION_DAYS
+startLogPruner()
+
 // Graceful shutdown — MUST await every ffmpeg before calling process.exit().
 //
 // Why this matters for Intel iGPU (VAAPI/QSV):
@@ -62,6 +78,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
     app.log.info(`Received ${sig} — awaiting graceful ffmpeg shutdown before exit`)
     stopIdleJanitor()
+    stopLogPruner()
     await stopAllSessionsGracefully(sig)  // blocks until every ffmpeg has exited
     try { await app.close() } catch {}
     process.exit(0)

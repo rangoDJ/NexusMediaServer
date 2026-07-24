@@ -1,11 +1,21 @@
 import ffmpeg from 'fluent-ffmpeg'
-import { mkdir, rm } from 'fs/promises'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdir, rm, readdir, stat, unlink } from 'fs/promises'
+import { existsSync, mkdirSync, writeFileSync, createWriteStream } from 'fs'
 import { join } from 'path'
 import { sessionStore } from './sessionStore.js'
 
 const HLS_BASE = process.env.HLS_OUTPUT_PATH ?? '/tmp/hls'
 const HW_ACCEL = (process.env.HW_ACCEL ?? '').trim() || 'cpu'
+
+// Per-session ffmpeg logs — kept separately from the session's own outputDir
+// (which gets rm -rf'd on cleanup) so a finished/failed session can still be
+// debugged afterward, mirroring Jellyfin's per-transcode-job log files.
+// Lives under the HLS volume so it persists across container restarts.
+const LOG_DIR = join(HLS_BASE, '_logs')
+const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS ?? '3', 10)
+try { mkdirSync(LOG_DIR, { recursive: true }) } catch (err) {
+  console.warn(`[transcoder] Could not prepare ffmpeg log directory "${LOG_DIR}": ${err.message}`)
+}
 
 // How long to wait for the HW encoder to produce its first output file before
 // giving up and retrying with CPU. Shorter than the API's 30s polling window
@@ -95,6 +105,26 @@ function buildCodecConfig(hwAccel, isH265) {
   }
 }
 
+/** Path to a session's durable ffmpeg log — valid whether or not the session is still active. */
+export function getSessionLogPath(session_id) {
+  return join(LOG_DIR, `ffmpeg-${session_id}.log`)
+}
+
+/** Open (or no-op if the log dir is unavailable) the durable per-session ffmpeg log file. */
+function openSessionLog(session_id) {
+  try {
+    return createWriteStream(getSessionLogPath(session_id), { flags: 'a' })
+  } catch (err) {
+    console.warn(`[transcoder] Could not open ffmpeg log for session ${session_id}: ${err.message}`)
+    return null
+  }
+}
+
+/** Write a line to the session's durable log file, if it has one. Never throws. */
+function logLine(entry, line) {
+  try { entry.logStream?.write(`${new Date().toISOString()} ${line}\n`) } catch { /* best-effort */ }
+}
+
 /**
  * Start a transcode session. Returns the effective config so the caller
  * can tell the client whether ABR was honored (the client routes to
@@ -120,6 +150,7 @@ export async function startTranscodeSession({ session_id, file_path, codec = 'h2
     watchdog: null,
     lastAccessAt: Date.now(),
     abr: useAbr,
+    logStream: openSessionLog(session_id),
   }
   sessionStore.set(session_id, entry)
 
@@ -254,6 +285,7 @@ function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, o
   // Log the exact ffmpeg command so we can verify options are correct.
   proc.on('start', cmdLine => {
     console.log(`[transcoder:${session_id}] ffmpeg command: ${cmdLine}`)
+    logLine(entry, `COMMAND: ${cmdLine}`)
   })
 
   // Track real-time encoding metrics so the /metrics endpoint can serve them.
@@ -275,6 +307,7 @@ function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, o
   proc.on('stderr', line => {
     // Log all ffmpeg stderr so errors, warnings, and progress are visible.
     console.log(`[ffmpeg:${session_id}] ${line}`)
+    logLine(entry, line)
 
     const m = /speed=\s*([\d.]+)x/.exec(line)
     if (!m) return
@@ -299,6 +332,7 @@ function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, o
 
   proc.on('end', () => {
     clearTimeout(entry.watchdog)
+    logLine(entry, 'ENDED (exit 0)')
     const s = sessionStore.get(session_id)
     if (s) s.status = 'done'
   })
@@ -310,9 +344,11 @@ function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, o
     if (!s) return
     if (hwAccel !== 'cpu' && onHwFail) {
       console.warn(`[transcoder] ${hwAccel} failed (${err.message.trim()}), retrying with CPU`)
+      logLine(entry, `${hwAccel} FAILED: ${err.message.trim()} — retrying with CPU`)
       onHwFail()
     } else {
       console.error(`[transcoder] ${label} transcode failed for session ${session_id}: ${err.message.trim()}`)
+      logLine(entry, `FAILED: ${err.message.trim()}`)
       s.status = 'error'
     }
   })
@@ -383,12 +419,16 @@ export function stopSession(session_id, reason = 'manual') {
   const s = sessionStore.get(session_id)
   if (!s) return
   console.log(`[transcoder] Stopping session ${session_id} (${reason})`)
+  logLine(s, `SESSION STOPPED (${reason})`)
   clearTimeout(s.watchdog)
   sessionStore.delete(session_id)
   // Drain first, then delete — rm runs concurrently with ffmpeg otherwise,
   // causing write errors as segments land in a directory that no longer exists.
+  // The log file is NOT deleted here — it lives outside outputDir specifically
+  // so it survives this cleanup for post-mortem debugging (pruned by age instead).
   drainProcess(session_id, s.process)
     .then(() => rm(s.outputDir, { recursive: true, force: true }))
+    .finally(() => s.logStream?.end())
     .catch(() => {})
 }
 
@@ -396,10 +436,12 @@ export function stopSession(session_id, reason = 'manual') {
 // the Node.js process doesn't exit before ffmpeg has finished releasing the GPU.
 async function stopSessionGracefully(session_id, s, reason) {
   console.log(`[transcoder] Graceful stop: session ${session_id} (${reason})`)
+  logLine(s, `SESSION STOPPED (${reason})`)
   clearTimeout(s.watchdog)
   sessionStore.delete(session_id)
   await drainProcess(session_id, s.process)
   await rm(s.outputDir, { recursive: true, force: true }).catch(() => {})
+  s.logStream?.end()
 }
 
 let janitorHandle = null
@@ -418,6 +460,38 @@ export function startIdleJanitor() {
 export function stopIdleJanitor() {
   clearInterval(janitorHandle)
   janitorHandle = null
+}
+
+// Per-session ffmpeg logs deliberately outlive their session (see
+// openSessionLog) so a finished/crashed transcode can still be debugged —
+// but they still need pruning eventually. Runs far less often than the idle
+// janitor since it's a directory scan, not an in-memory map check.
+let logPrunerHandle = null
+export function startLogPruner() {
+  if (logPrunerHandle) return
+  const sweep = () => pruneOldLogs().catch(err => console.warn(`[transcoder] Log prune failed: ${err.message}`))
+  sweep()
+  logPrunerHandle = setInterval(sweep, 60 * 60 * 1000) // hourly
+}
+
+export function stopLogPruner() {
+  clearInterval(logPrunerHandle)
+  logPrunerHandle = null
+}
+
+async function pruneOldLogs() {
+  const cutoffMs = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000
+  let files
+  try { files = await readdir(LOG_DIR) } catch { return }
+
+  for (const file of files) {
+    if (!file.startsWith('ffmpeg-') || !file.endsWith('.log')) continue
+    const path = join(LOG_DIR, file)
+    try {
+      const st = await stat(path)
+      if (st.mtimeMs < cutoffMs) await unlink(path)
+    } catch { /* file gone already, or a transient stat error — skip it */ }
+  }
 }
 
 // Gracefully stop every active session in parallel and wait for all of them.

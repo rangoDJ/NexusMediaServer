@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join, resolve } from 'path'
 import { sessionStore } from '../services/sessionStore.js'
-import { startTranscodeSession, stopSession, touchSession } from '../services/transcoder.js'
+import { startTranscodeSession, stopSession, touchSession, getSessionLogPath } from '../services/transcoder.js'
 
 export default async function sessionRoutes(app) {
   // Create a new transcode session
@@ -109,6 +109,19 @@ export default async function sessionRoutes(app) {
   app.delete('/:id', async (request, reply) => {
     stopSession(request.params.id, 'client requested DELETE')
     return reply.code(204).send()
+  })
+
+  // Tail of the durable per-session ffmpeg log. Deliberately independent of
+  // sessionStore — the whole point is being able to debug a session AFTER
+  // it's ended and its outputDir is gone (see services/transcoder.js).
+  app.get('/:id/log', async (request, reply) => {
+    const logPath = getSessionLogPath(request.params.id)
+    if (!existsSync(logPath)) return reply.code(404).send({ error: 'No log for this session' })
+
+    const lines = Math.min(parseInt(request.query.lines ?? '200', 10) || 200, 2000)
+    const content = readFileSync(logPath, 'utf8').split('\n')
+    const tail = content.slice(-lines).join('\n')
+    return { session_id: request.params.id, lines: tail.split('\n').length, log_tail: tail }
   })
 }
 

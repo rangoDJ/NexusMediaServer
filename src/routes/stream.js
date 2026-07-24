@@ -528,6 +528,18 @@ export default async function streamRoutes(app) {
       transcoderError = err.response?.data?.error ?? err.message
     }
 
+    // The ffmpeg log survives independently of the in-memory session (see
+    // GET /session/:id/log on the node) — fetch it even for sessions that
+    // have already ended, which /debug above (sessionStore-backed) can't do.
+    let logTail = null
+    try {
+      const { data } = await axios.get(
+        `${session.node_url}/session/${session.remote_session_id}/log`,
+        { headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET }, timeout: 5000 }
+      )
+      logTail = data.log_tail
+    } catch { /* no log yet, or node unreachable — omit rather than fail the whole request */ }
+
     return {
       db_session: {
         id: session.id, status: session.status, codec: session.codec,
@@ -538,6 +550,7 @@ export default async function streamRoutes(app) {
       },
       transcoder_state: transcoderState,
       transcoder_error: transcoderError,
+      ffmpeg_log_tail: logTail,
     }
   })
 
