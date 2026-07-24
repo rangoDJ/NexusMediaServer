@@ -1,11 +1,17 @@
 import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById } from '../services/tmdb.js'
 import { getSettings } from '../services/settingsCache.js'
+import { parseProviderTags } from '../services/providerTags.js'
 
 /**
  * Built-in task: refresh TMDB metadata for all media items that have a tmdb_id.
  *
  * This updates poster/backdrop URLs, ratings, plot, and genres from TMDB without
  * re-scanning the filesystem. Useful when TMDB refreshes artwork or ratings change.
+ *
+ * Also repairs titles polluted by *arr-style folder naming (e.g. a folder named
+ * "Movie (2005) {tmdb-11679}" scanned before this was handled at scan time —
+ * see services/providerTags.js) — this pass runs even when TMDB itself is
+ * disabled, since it's pure local string cleanup.
  *
  * Triggers (defaults)
  *   • Daily at 04:00 UTC
@@ -26,22 +32,6 @@ export const refreshMetadataTask = {
 
   /** @param {import('../services/taskScheduler.js').ExecuteContext} ctx */
   async execute({ db, log, signal, progress }) {
-    const settings = await getSettings(db)
-    const tmdbOpts = {
-      apiKey:   settings['tmdb.api_key'] || process.env.TMDB_API_KEY,
-      language: settings['tmdb.language'] ?? 'en',
-      enabled:  settings['tmdb.enabled'] !== false,
-    }
-
-    if (!tmdbOpts.enabled || !tmdbOpts.apiKey) {
-      log.info('[tasks/refresh-metadata] TMDB disabled or no API key — skipping')
-      return
-    }
-
-    // Process ALL items, including those without a tmdb_id — TMDB might match
-    // them now even if it didn't at scan time (added to TMDB since, key was
-    // missing then, etc.). This is exactly what users mean by "why are my
-    // posters missing" — items that fell through the cracks at first scan.
     const { rows: items } = await db.query(`
       SELECT id, type, title, year, tmdb_id, poster_url
         FROM media_items
@@ -50,6 +40,38 @@ export const refreshMetadataTask = {
 
     if (!items.length) {
       log.info('[tasks/refresh-metadata] No items to refresh')
+      return
+    }
+
+    // Pass 0: strip embedded provider-id tags leaked into the title by
+    // *arr-style folder naming, and remember any id found so the main pass
+    // below can use it for a direct lookup instead of a fuzzy title search.
+    // Pure local string work — runs regardless of whether TMDB is configured.
+    let titlesCleaned = 0
+    for (const item of items) {
+      const { tmdbId, cleanName } = parseProviderTags(item.title)
+      item.embeddedTmdbId = tmdbId
+      if (cleanName && cleanName !== item.title) {
+        await db.query('UPDATE media_items SET title=$2 WHERE id=$1', [item.id, cleanName])
+        item.title = cleanName
+        titlesCleaned++
+      }
+    }
+    if (titlesCleaned > 0) {
+      log.info(`[tasks/refresh-metadata] Cleaned ${titlesCleaned} title(s) with embedded provider-id tags`)
+    }
+    progress(5)
+    if (signal.aborted) return
+
+    const settings = await getSettings(db)
+    const tmdbOpts = {
+      apiKey:   settings['tmdb.api_key'] || process.env.TMDB_API_KEY,
+      language: settings['tmdb.language'] ?? 'en',
+      enabled:  settings['tmdb.enabled'] !== false,
+    }
+
+    if (!tmdbOpts.enabled || !tmdbOpts.apiKey) {
+      log.info('[tasks/refresh-metadata] TMDB disabled or no API key — skipping metadata match')
       return
     }
 
@@ -67,14 +89,18 @@ export const refreshMetadataTask = {
       }
 
       try {
+        // Prefer an already-confirmed tmdb_id; otherwise an id embedded in
+        // the (now-cleaned) title's original folder name is a guaranteed-
+        // accurate lookup, far better than a fuzzy search.
+        const effectiveTmdbId = item.tmdb_id ?? item.embeddedTmdbId
+
         let meta
-        if (item.tmdb_id) {
-          // Direct ID lookup — fast and accurate
+        if (effectiveTmdbId) {
           meta = item.type === 'movie'
-            ? await fetchMovieById(item.tmdb_id, tmdbOpts)
-            : await fetchSeriesById(item.tmdb_id, tmdbOpts)
+            ? await fetchMovieById(effectiveTmdbId, tmdbOpts)
+            : await fetchSeriesById(effectiveTmdbId, tmdbOpts)
+          if (!item.tmdb_id && meta?.tmdb_id) matched++
         } else {
-          // No tmdb_id yet — search by title to try to match
           meta = item.type === 'movie'
             ? await fetchMovieMetadata(item.title, item.year, tmdbOpts)
             : await fetchSeriesMetadata(item.title, tmdbOpts)
@@ -85,16 +111,18 @@ export const refreshMetadataTask = {
           await db.query(`
             UPDATE media_items
                SET tmdb_id      = COALESCE(tmdb_id, $2),
-                   poster_url   = COALESCE($3, poster_url),
-                   backdrop_url = COALESCE($4, backdrop_url),
-                   rating       = COALESCE($5, rating),
-                   plot         = COALESCE($6, plot),
-                   genres       = COALESCE($7, genres),
-                   tagline      = COALESCE($8, tagline)
+                   title        = COALESCE($3, title),
+                   poster_url   = COALESCE($4, poster_url),
+                   backdrop_url = COALESCE($5, backdrop_url),
+                   rating       = COALESCE($6, rating),
+                   plot         = COALESCE($7, plot),
+                   genres       = COALESCE($8, genres),
+                   tagline      = COALESCE($9, tagline)
              WHERE id = $1
           `, [
             item.id,
             meta.tmdb_id,
+            meta.title        ?? null,
             meta.poster_url   ?? null,
             meta.backdrop_url ?? null,
             meta.rating       ?? null,
@@ -110,7 +138,7 @@ export const refreshMetadataTask = {
       }
 
       done++
-      progress(Math.round((done / items.length) * 100))
+      progress(5 + Math.round((done / items.length) * 95))
       if (done < items.length) await sleep(250)
     }
 

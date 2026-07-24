@@ -1,11 +1,12 @@
 import { readdir, stat } from 'fs/promises'
 import { join, extname, basename, dirname } from 'path'
 import { parseNfo } from './nfoParser.js'
-import { fetchMovieMetadata, fetchSeriesMetadata } from './tmdb.js'
+import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById } from './tmdb.js'
 import { getSettings } from './settingsCache.js'
 import { probeFile, invalidateProbeCache } from './probe.js'
 import { callHook } from './pluginLoader.js'
 import { logActivity } from './activityLog.js'
+import { parseProviderTags } from './providerTags.js'
 
 /**
  * Yield to the Node.js event loop so that pending HTTP request callbacks
@@ -442,12 +443,23 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localA
 
   if (nfoPath) log.debug(`[scan] NFO: ${nfoPath} → title="${nfo.title ?? '(none)'}"`)
 
-  // TMDB
+  // TMDB — if the folder name carries an embedded id tag (Radarr's default
+  // naming, e.g. "{tmdb-11679}"), look up that exact id directly instead of
+  // a fuzzy title search. More accurate, and avoids the tag itself (still
+  // present in the raw folder name even though guessTitle() stripped it for
+  // display) polluting the search query.
+  const folderTags = parseProviderTags(basename(dirname(filePath)))
   let tmdbMeta = {}
   if (tmdbOpts.enabled && tmdbOpts.apiKey && !nfo.skipTmdb) {
-    log.info(`[scan] Fetching TMDB metadata for "${title}" (${year ?? '?'})`)
     try {
-      tmdbMeta = await fetchMovieMetadata(title, year, tmdbOpts)
+      if (folderTags.tmdbId) {
+        log.info(`[scan] Folder name has embedded TMDB id ${folderTags.tmdbId} for "${title}" — fetching directly`)
+        tmdbMeta = await fetchMovieById(folderTags.tmdbId, tmdbOpts)
+      }
+      if (!tmdbMeta.tmdb_id) {
+        log.info(`[scan] Fetching TMDB metadata for "${title}" (${year ?? '?'})`)
+        tmdbMeta = await fetchMovieMetadata(title, year, tmdbOpts)
+      }
       if (tmdbMeta.tmdb_id) {
         log.info(`[scan] TMDB match: "${tmdbMeta.title}" (id=${tmdbMeta.tmdb_id})`)
       } else {
@@ -602,7 +614,11 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signa
 
     const nfoFile = files.find(f => f === 'tvshow.nfo')
     const nfoPath = nfoFile ? join(seriesPath, nfoFile) : null
-    const folderTitle = seriesEntry.name
+    // Strip embedded provider-id tags (Radarr/Sonarr-style "{tmdb-1234}")
+    // from the folder name before using it as a title anywhere — matching,
+    // fallback title, and the final insert all derive from folderTitle.
+    const folderTags   = parseProviderTags(seriesEntry.name)
+    const folderTitle  = folderTags.cleanName || seriesEntry.name
 
     // Find an existing series row using EVERY signal we have, before going to
     // TMDB or considering this a new series. Matching only by folder name was
@@ -629,9 +645,15 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signa
       const title = nfo.title ?? folderTitle
 
       if (tmdbOpts.enabled && tmdbOpts.apiKey) {
-        log.info(`[scan] Fetching TMDB series metadata for "${title}"`)
         try {
-          meta = await fetchSeriesMetadata(title, tmdbOpts)
+          if (folderTags.tmdbId) {
+            log.info(`[scan] Folder name has embedded TMDB id ${folderTags.tmdbId} for "${title}" — fetching directly`)
+            meta = await fetchSeriesById(folderTags.tmdbId, tmdbOpts)
+          }
+          if (!meta.tmdb_id) {
+            log.info(`[scan] Fetching TMDB series metadata for "${title}"`)
+            meta = await fetchSeriesMetadata(title, tmdbOpts)
+          }
           if (meta.tmdb_id) {
             log.info(`[scan] TMDB match: "${meta.title}" (id=${meta.tmdb_id})`)
           } else {
@@ -879,7 +901,9 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signa
 }
 
 function guessTitle(filePath) {
-  return basename(dirname(filePath)) || basename(filePath, extname(filePath))
+  const folderName = basename(dirname(filePath))
+  const { cleanName } = parseProviderTags(folderName)
+  return cleanName || basename(filePath, extname(filePath))
 }
 
 function guessYear(filePath) {
