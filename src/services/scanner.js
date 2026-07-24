@@ -5,6 +5,7 @@ import { fetchMovieMetadata, fetchSeriesMetadata } from './tmdb.js'
 import { getSettings } from './settingsCache.js'
 import { probeFile, invalidateProbeCache } from './probe.js'
 import { callHook } from './pluginLoader.js'
+import { logActivity } from './activityLog.js'
 
 /**
  * Yield to the Node.js event loop so that pending HTTP request callbacks
@@ -226,6 +227,15 @@ export async function scanLibrary(db, library, log, broadcaster = null, { signal
     invalidateProbeCache()
     callHook('scan.complete', { library, itemCount }, log).catch(err => log.warn({ err }, '[scan] scan.complete hook failed'))
     broadcaster?.emitScanComplete(library.id, library.name, itemsAdded, itemsRemoved)
+    // Only worth a feed entry when something actually changed — a "0 changes"
+    // line every 12h for every library would drown out everything else.
+    if (itemCount > 0 || itemsRemoved.length > 0) {
+      logActivity(db, log, {
+        type: 'scan.complete',
+        message: `"${library.name}" scan complete — ${itemCount} added, ${itemsRemoved.length} removed`,
+        details: { library_id: library.id, added: itemCount, removed: itemsRemoved.length },
+      })
+    }
   } catch (err) {
     log.error({ err }, `[scan] ✗ Library "${library.name}" failed: ${err.message}`)
     invalidateProbeCache()
@@ -234,6 +244,11 @@ export async function scanLibrary(db, library, log, broadcaster = null, { signal
       ['error', library.id]
     )
     broadcaster?.emitScanError(library.id, library.name, err.message)
+    logActivity(db, log, {
+      type: 'scan.error', severity: 'error',
+      message: `"${library.name}" scan failed — ${err.message}`,
+      details: { library_id: library.id },
+    })
     throw err
   } finally {
     activeScans.delete(library.id)

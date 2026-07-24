@@ -18,6 +18,7 @@ import usersRoutes from './routes/users.js'
 import settingsRoutes from './routes/settings.js'
 import serverRoutes from './routes/server.js'
 import { authMiddleware } from './middleware/auth.js'
+import { buildLoggerOptions } from './services/logging.js'
 import { startHealthPoller } from './services/transcoderPool.js'
 import { loadPlugins, callHook } from './services/pluginLoader.js'
 import { TaskScheduler } from './services/taskScheduler.js'
@@ -30,6 +31,7 @@ import peopleRoutes from './routes/people.js'
 import taskRoutes from './routes/tasks.js'
 import eventsRoute from './routes/events.js'
 import collectionsRoutes from './routes/collections.js'
+import activityRoutes from './routes/activity.js'
 import { createScanLibrariesTask } from './tasks/scanLibraries.js'
 import { cleanupSessionsTask } from './tasks/cleanupSessions.js'
 import { refreshMetadataTask } from './tasks/refreshMetadata.js'
@@ -39,7 +41,13 @@ import { analyzeIntrosTask } from './tasks/analyzeIntros.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
 
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
+const app = Fastify({
+  logger: buildLoggerOptions({
+    logDir:       process.env.LOG_DIR ?? '/config/logs',
+    fileBaseName: 'server',
+    retentionDays: parseInt(process.env.LOG_RETENTION_DAYS ?? '3', 10),
+  }),
+})
 
 // ── OpenAPI docs ──────────────────────────────────────────────────────────────
 await app.register(swagger, {
@@ -114,6 +122,7 @@ await app.register(searchRoutes,     { prefix: '/api/v1/search' })
 await app.register(peopleRoutes,     { prefix: '/api/v1/people' })
 await app.register(taskRoutes,        { prefix: '/api/v1/tasks' })
 await app.register(collectionsRoutes, { prefix: '/api/v1/collections' })
+await app.register(activityRoutes,    { prefix: '/api/v1/activity' })
 await app.register(eventsRoute,       { prefix: '/api/v1' })
 
 // Docker healthcheck endpoint. MUST always return 2xx as long as the

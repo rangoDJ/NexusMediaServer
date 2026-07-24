@@ -46,29 +46,42 @@ export default async function mediaRoutes(app) {
     const { library_id, type, search, genre, sort = 'alphabetical', page = 1 } = request.query
     const limit  = Math.min(parseInt(request.query.limit ?? '50', 10) || 50, 200)
     const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit
-    const params = []
+    const userId = request.user.sub
+    const params = [userId]
     const conditions = []
 
-    if (library_id) { params.push(library_id); conditions.push(`library_id=$${params.length}`) }
-    if (type)       { params.push(type);       conditions.push(`type=$${params.length}`) }
-    if (search)     { params.push(`%${search}%`); conditions.push(`title ILIKE $${params.length}`) }
-    if (genre)      { params.push(genre);      conditions.push(`$${params.length} = ANY(genres)`) }
+    if (library_id) { params.push(library_id); conditions.push(`m.library_id=$${params.length}`) }
+    if (type)       { params.push(type);       conditions.push(`m.type=$${params.length}`) }
+    if (search)     { params.push(`%${search}%`); conditions.push(`m.title ILIKE $${params.length}`) }
+    if (genre)      { params.push(genre);      conditions.push(`$${params.length} = ANY(m.genres)`) }
 
     const ORDER_BY = {
-      alphabetical:   'sort_title NULLS LAST, title',
-      recently_added: 'created_at DESC NULLS LAST',
+      alphabetical:   'm.sort_title NULLS LAST, m.title',
+      recently_added: 'm.created_at DESC NULLS LAST',
       random:         'RANDOM()',
-      year_desc:      'year DESC NULLS LAST, title',
-      rating:         'rating DESC NULLS LAST, title',
+      year_desc:      'm.year DESC NULLS LAST, m.title',
+      rating:         'm.rating DESC NULLS LAST, m.title',
     }
     const orderBy = ORDER_BY[sort] ?? ORDER_BY.alphabetical
     const where   = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
 
+    // wp = this user's progress on the movie/series row itself. For series,
+    // "watched" isn't meaningful at the series level — unwatched_count (below)
+    // is what the UI badges instead, mirroring Jellyfin's per-series
+    // UnplayedItemCount vs per-movie Played checkmark.
     const { rows } = await app.db.query(
-      `SELECT id, library_id, type, title, year, genres, poster_url, backdrop_url, rating,
-              duration_secs, video_codec, audio_codec, container, width, height, created_at,
-              metadata
-       FROM media_items ${where}
+      `SELECT m.id, m.library_id, m.type, m.title, m.year, m.genres, m.poster_url, m.backdrop_url, m.rating,
+              m.duration_secs, m.video_codec, m.audio_codec, m.container, m.width, m.height, m.created_at,
+              m.metadata,
+              wp.completed AS watched, wp.position_secs,
+              CASE WHEN m.type = 'series' THEN (
+                SELECT COUNT(*)::int FROM episodes e
+                LEFT JOIN watch_progress ewp ON ewp.episode_id = e.id AND ewp.user_id = $1
+                WHERE e.series_id = m.id AND ewp.completed IS NOT TRUE
+              ) ELSE NULL END AS unwatched_count
+       FROM media_items m
+       LEFT JOIN watch_progress wp ON wp.media_item_id = m.id AND wp.user_id = $1
+       ${where}
        ORDER BY ${orderBy}
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
@@ -80,6 +93,20 @@ export default async function mediaRoutes(app) {
       delete r.metadata // not needed by clients listing many items
       return r
     })
+  })
+
+  // Aggregate item counts for the dashboard overview tile row.
+  app.get('/counts', async () => {
+    const [{ rows: byType }, { rows: [{ count: episodes }] }] = await Promise.all([
+      app.db.query("SELECT type, COUNT(*)::int AS count FROM media_items GROUP BY type"),
+      app.db.query("SELECT COUNT(*)::int AS count FROM episodes"),
+    ])
+    const counts = { movies: 0, series: 0, episodes }
+    for (const row of byType) {
+      if (row.type === 'movie')  counts.movies = row.count
+      if (row.type === 'series') counts.series = row.count
+    }
+    return counts
   })
 
   // Distinct genre list (for filter dropdowns)
@@ -115,9 +142,16 @@ export default async function mediaRoutes(app) {
   app.get('/favorites', async (request) => {
     const { rows } = await app.db.query(`
       SELECT m.id, m.type, m.title, m.year, m.poster_url, m.backdrop_url,
-             m.duration_secs, m.metadata, uf.created_at AS favorited_at
+             m.duration_secs, m.metadata, uf.created_at AS favorited_at,
+             wp.completed AS watched, wp.position_secs,
+             CASE WHEN m.type = 'series' THEN (
+               SELECT COUNT(*)::int FROM episodes e
+               LEFT JOIN watch_progress ewp ON ewp.episode_id = e.id AND ewp.user_id = $1
+               WHERE e.series_id = m.id AND ewp.completed IS NOT TRUE
+             ) ELSE NULL END AS unwatched_count
       FROM user_favorites uf
       JOIN media_items m ON m.id = uf.media_item_id
+      LEFT JOIN watch_progress wp ON wp.media_item_id = m.id AND wp.user_id = $1
       WHERE uf.user_id = $1
       ORDER BY uf.created_at DESC
       LIMIT 50

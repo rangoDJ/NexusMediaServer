@@ -151,6 +151,28 @@
 .card h3 { font-size: 14px; font-weight: 600; }
 .inlineForm { display: flex; gap: 8px; }
 .inlineForm input { flex: 1; }
+
+/* Scheduled tasks */
+.taskCategory { display: flex; flex-direction: column; gap: 10px; }
+.taskCategoryTitle {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.taskProgressTrack {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface2);
+  overflow: hidden;
+}
+.taskProgressFill {
+  height: 100%;
+  border-radius: 2px;
+  background: #7c6af7;
+  transition: width 0.4s ease;
+}
 .inlineError {
   background: rgba(224, 85, 85, 0.1);
   border: 1px solid var(--danger);

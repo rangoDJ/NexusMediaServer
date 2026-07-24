@@ -1,5 +1,6 @@
 import { requireAdmin } from '../middleware/auth.js'
 import { pluginManager, registry, validateSettings } from '../services/pluginManager.js'
+import { logActivity } from '../services/activityLog.js'
 
 /**
  * Plugins REST API — all routes require admin.
@@ -63,6 +64,10 @@ export default async function pluginRoutes(app) {
     }
     try {
       const result = await pluginManager.setEnabled(request.params.id, enabled, app.db, app.log)
+      logActivity(app.db, app.log, {
+        type: enabled ? 'plugin.enabled' : 'plugin.disabled', userId: request.user.sub,
+        message: `Plugin "${request.params.id}" ${enabled ? 'enabled' : 'disabled'} by ${request.user.username}`,
+      })
       return { id: request.params.id, is_enabled: enabled, ...result }
     } catch (err) {
       if (err.message === 'Plugin not found') return reply.code(404).send({ error: err.message })
@@ -120,6 +125,10 @@ export default async function pluginRoutes(app) {
   app.delete('/:id', async (request, reply) => {
     try {
       await pluginManager.uninstall(request.params.id, app.db, app.log)
+      logActivity(app.db, app.log, {
+        type: 'plugin.uninstalled', userId: request.user.sub,
+        message: `Plugin "${request.params.id}" uninstalled by ${request.user.username}`,
+      })
       return reply.code(204).send()
     } catch (err) {
       if (err.message.includes('not found')) return reply.code(404).send({ error: err.message })
@@ -139,6 +148,10 @@ export default async function pluginRoutes(app) {
     }
     try {
       const manifest = await pluginManager.install(downloadUrl, pluginName, app.db, app.log)
+      logActivity(app.db, app.log, {
+        type: 'plugin.installed', userId: request.user.sub,
+        message: `Plugin "${manifest.name ?? manifest.id}" installed by ${request.user.username}`,
+      })
       return reply.code(201).send({ installed: true, plugin: manifest })
     } catch (err) {
       return reply.code(422).send({ error: err.message })

@@ -2,6 +2,7 @@ import bcrypt from 'bcrypt'
 import crypto from 'crypto'
 import { getSetting } from '../services/settingsCache.js'
 import { callHook } from '../services/pluginLoader.js'
+import { logActivity } from '../services/activityLog.js'
 
 // Access tokens are short-lived (1 day). Refresh tokens are long-lived and stored
 // as bcrypt hashes so a DB breach doesn't yield usable tokens.
@@ -78,6 +79,11 @@ export default async function authRoutes(app) {
       user_agent: request.headers['user-agent'],
     })
 
+    logActivity(app.db, app.log, {
+      type: 'user.created', userId: user.id,
+      message: `Account "${user.username}" created${isFirst ? ' (initial admin)' : ''}`,
+    })
+
     return reply.code(201).send({ ...tokens, user })
   })
 
@@ -89,6 +95,11 @@ export default async function authRoutes(app) {
     )
     const user = rows[0]
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+      logActivity(app.db, app.log, {
+        type: 'auth.login_failed', severity: 'warning',
+        message: `Failed sign-in attempt for "${username}"`,
+        details: { ip_address: request.ip },
+      })
       return reply.code(401).send({ error: 'Invalid credentials' })
     }
 
@@ -105,6 +116,13 @@ export default async function authRoutes(app) {
       ip_address: request.ip,
       user_agent: request.headers['user-agent'],
     })
+
+    logActivity(app.db, app.log, {
+      type: 'auth.login', userId: user.id,
+      message: `${user.username} signed in${device_name ? ` from ${device_name}` : ''}`,
+      details: { ip_address: request.ip, device_type },
+    })
+
     return { ...tokens, user: { id: user.id, username: user.username, role: user.role } }
   })
 

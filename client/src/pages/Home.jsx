@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
+import MediaCard from '../components/MediaCard.jsx'
 import styles from './Home.module.css'
 
 const POPULAR_GENRES = ['Action', 'Comedy', 'Drama', 'Sci-Fi', 'Horror', 'Thriller', 'Animation', 'Documentary']
@@ -94,14 +95,14 @@ export default function Home() {
       {continueWatching.length > 0 && (
         <Section title="Continue Watching">
           {continueWatching.map(item => (
-            <MediaCard key={item.id} item={item} showProgress />
+            <MediaCard key={item.id} item={item} showProgress className={styles.cardSlot} />
           ))}
         </Section>
       )}
 
       {favorites.length > 0 && (
         <Section title="My Favorites">
-          {favorites.map(item => <MediaCard key={item.id} item={item} />)}
+          {favorites.map(item => <MediaCard key={item.id} item={item} className={styles.cardSlot} />)}
         </Section>
       )}
 
@@ -110,7 +111,7 @@ export default function Home() {
         if (!recent?.length) return null
         return (
           <Section key={`recent-${lib.id}`} title={`Recently Added · ${lib.name}`}>
-            {recent.map(item => <MediaCard key={item.id} item={item} />)}
+            {recent.map(item => <MediaCard key={item.id} item={item} className={styles.cardSlot} />)}
           </Section>
         )
       })}
@@ -120,7 +121,7 @@ export default function Home() {
         if (!random?.length) return null
         return (
           <Section key={`random-${lib.id}`} title={`Random Picks · ${lib.name}`}>
-            {random.map(item => <MediaCard key={item.id} item={item} />)}
+            {random.map(item => <MediaCard key={item.id} item={item} className={styles.cardSlot} />)}
           </Section>
         )
       })}
@@ -130,7 +131,7 @@ export default function Home() {
         if (!items?.length) return null
         return (
           <Section key={`genre-${g}`} title={`Top ${g}`}>
-            {items.map(item => <MediaCard key={item.id} item={item} />)}
+            {items.map(item => <MediaCard key={item.id} item={item} className={styles.cardSlot} />)}
           </Section>
         )
       })}
@@ -155,36 +156,6 @@ function Section({ title, children }) {
       <h2 className={styles.sectionTitle}>{title}</h2>
       <div className={styles.row}>{children}</div>
     </section>
-  )
-}
-
-function MediaCard({ item, showProgress }) {
-  const navigate = useNavigate()
-  const pct = showProgress && item.duration_secs > 0
-    ? Math.min(100, Math.round((item.position_secs / item.duration_secs) * 100))
-    : 0
-
-  return (
-    <button
-      className={styles.card}
-      onClick={() => navigate(`/movie/${item.id}`)}
-      title={item.title}
-    >
-      <div className={styles.poster}>
-        {item.poster_url
-          ? <img src={item.poster_url} alt={item.title} loading="lazy" />
-          : <div className={styles.posterPlaceholder}>{item.title[0]?.toUpperCase()}</div>
-        }
-        {pct > 0 && (
-          <div className={styles.progressBar}>
-            <div className={styles.progressFill} style={{ width: `${pct}%` }} />
-          </div>
-        )}
-        {item.type === 'series' && <div className={styles.seriesBadge}>SERIES</div>}
-      </div>
-      <p className={styles.cardTitle}>{item.title}</p>
-      {item.year && <p className={styles.cardSub}>{item.year}</p>}
-    </button>
   )
 }
 

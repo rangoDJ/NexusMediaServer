@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import Player from './Player.jsx'
 import styles from './MovieDetail.module.css'
@@ -17,6 +17,7 @@ function pad(n) { return String(n).padStart(2, '0') }
 export default function MovieDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const user = JSON.parse(localStorage.getItem('nexus_user') || '{}')
 
   const [item, setItem]               = useState(null)
@@ -36,7 +37,14 @@ export default function MovieDetail() {
       if (mediaRes.data.type === 'series' && mediaRes.data.episodes?.length) {
         setOpenSeason(mediaRes.data.episodes[0].season_number)
       }
+      // Hover-play from a MediaCard lands here with ?play=1 for movies —
+      // auto-start playback (Player resumes from stored progress on its own).
+      if (searchParams.get('play') === '1' && mediaRes.data.type !== 'series') {
+        setPlaying({ mediaItemId: mediaRes.data.id, title: mediaRes.data.title })
+        setSearchParams(prev => { prev.delete('play'); return prev }, { replace: true })
+      }
     }).catch(() => setError('Could not load this title.'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   async function toggleFavorite() {

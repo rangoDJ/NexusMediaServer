@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { useServerEvents } from '../hooks/useServerEvents.js'
+import MediaCard from '../components/MediaCard.jsx'
 import styles from './LibraryDetail.module.css'
 
 const SORT_OPTIONS = [
@@ -156,24 +157,7 @@ export default function LibraryDetail() {
       ) : (
         <>
           <div className={styles.grid}>
-            {items.map(item => (
-              <button
-                key={item.id}
-                className={styles.card}
-                onClick={() => navigate(`/movie/${item.id}`)}
-                title={item.title}
-              >
-                <div className={styles.poster}>
-                  {item.poster_url
-                    ? <img src={item.poster_url} alt={item.title} loading="lazy" />
-                    : <div className={styles.posterPlaceholder}>{item.title[0]?.toUpperCase()}</div>
-                  }
-                  {item.type === 'series' && <div className={styles.badge}>SERIES</div>}
-                </div>
-                <p className={styles.cardTitle}>{item.title}</p>
-                {item.year && <p className={styles.cardSub}>{item.year}</p>}
-              </button>
-            ))}
+            {items.map(item => <MediaCard key={item.id} item={item} />)}
           </div>
 
           {hasMore && (

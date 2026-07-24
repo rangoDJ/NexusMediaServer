@@ -1,5 +1,6 @@
 import bcrypt from 'bcrypt'
 import { requireAdmin } from '../middleware/auth.js'
+import { logActivity } from '../services/activityLog.js'
 
 export default async function usersRoutes(app) {
   app.addHook('preHandler', app.authenticate)
@@ -31,7 +32,16 @@ export default async function usersRoutes(app) {
     if (request.params.id === request.user.sub) {
       return reply.code(400).send({ error: 'Cannot delete yourself' })
     }
-    await app.db.query('DELETE FROM users WHERE id=$1', [request.params.id])
+    const { rows } = await app.db.query(
+      'DELETE FROM users WHERE id=$1 RETURNING username', [request.params.id]
+    )
+    if (!rows.length) return reply.code(404).send({ error: 'User not found' })
+
+    logActivity(app.db, app.log, {
+      type: 'user.deleted', userId: request.user.sub,
+      message: `${request.user.username} deleted account "${rows[0].username}"`,
+    })
+
     return reply.code(204).send()
   })
 

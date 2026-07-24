@@ -4,11 +4,14 @@ import { api } from '../api/client.js'
 import styles from './Settings.module.css'
 
 const TABS = [
+  { id: 'overview',    label: 'Overview' },
+  { id: 'activity',    label: 'Activity' },
   { id: 'general',     label: 'General' },
   { id: 'metadata',    label: 'Metadata' },
   { id: 'library',     label: 'Libraries' },
   { id: 'transcoding', label: 'Transcoding' },
   { id: 'transcoders', label: 'Transcoder Nodes' },
+  { id: 'tasks',       label: 'Scheduled Tasks' },
   { id: 'stats',       label: 'Playback Stats' },
   { id: 'plugins',     label: 'Plugins' },
   { id: 'users',       label: 'Users' },
@@ -16,7 +19,7 @@ const TABS = [
 ]
 
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState('general')
+  const [activeTab, setActiveTab] = useState('overview')
   const [settings, setSettings] = useState(null)
   const [toast, setToast] = useState(null)
   const navigate = useNavigate()
@@ -92,11 +95,14 @@ export default function Settings() {
         </header>
 
         <div className={styles.content}>
+          {activeTab === 'overview'    && <OverviewTab onNavigate={setActiveTab} />}
+          {activeTab === 'activity'    && <ActivityTab />}
           {activeTab === 'general'     && <GeneralTab     rows={settings.general ?? []}     save={save} />}
           {activeTab === 'metadata'    && <MetadataTab    rows={settings.metadata ?? []}    save={save} />}
           {activeTab === 'library'     && <LibraryTab     rows={settings.library ?? []}     save={save} />}
           {activeTab === 'transcoding' && <TranscodingTab rows={settings.transcoding ?? []} save={save} />}
           {activeTab === 'transcoders' && <TranscoderNodes />}
+          {activeTab === 'tasks'       && <TasksTab />}
           {activeTab === 'stats'       && <StatsTab />}
           {activeTab === 'plugins'     && <PluginsTab />}
           {activeTab === 'users'       && <UsersTab />}
@@ -602,6 +608,415 @@ function TranscoderNodes() {
           <button className="primary" type="submit">Add</button>
         </form>
       </div>
+    </div>
+  )
+}
+
+// ─── Scheduled tasks ─────────────────────────────────────────────────────────
+
+// Task execution results come from two sources with different casing: a task
+// that just ran this process lifetime carries an in-memory camelCase result
+// (taskScheduler.js #execute), while one loaded from DB after a restart is
+// snake_case (task_results columns). Normalize once so the UI doesn't care.
+function normalizeResult(r) {
+  if (!r) return null
+  return {
+    status:       r.status,
+    startedAt:    r.startedAt    ?? r.started_at,
+    endedAt:      r.endedAt      ?? r.ended_at,
+    durationMs:   r.durationMs   ?? r.duration_ms,
+    errorMessage: r.errorMessage ?? r.error_message,
+  }
+}
+
+const TASK_STATUS_COLOR = { completed: '#4caf7d', failed: '#e05555', cancelled: '#888' }
+
+function TasksTab() {
+  const [tasks, setTasks]     = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(null) // task id currently expanded for schedule editing
+
+  const load = useCallback(() => {
+    return api.get('/tasks').then(r => setTasks(r.data)).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    load().finally(() => setLoading(false))
+    // Poll while this tab is mounted — cheap for an admin-only, low-traffic
+    // view, and avoids wiring a dedicated SSE channel for task state.
+    const interval = setInterval(load, 3000)
+    return () => clearInterval(interval)
+  }, [load])
+
+  async function run(id) {
+    try { await api.post(`/tasks/${id}/run`); load() }
+    catch (err) { alert(err.response?.data?.error ?? 'Failed to start task') }
+  }
+
+  async function cancel(id) {
+    try { await api.delete(`/tasks/${id}/run`); load() }
+    catch (err) { alert(err.response?.data?.error ?? 'Failed to cancel task') }
+  }
+
+  if (loading) return <p className={styles.empty}>Loading tasks…</p>
+
+  const byCategory = tasks.reduce((acc, t) => {
+    (acc[t.category] ??= []).push(t)
+    return acc
+  }, {})
+
+  return (
+    <div className={styles.section}>
+      <p className={styles.sectionDesc}>
+        Background maintenance jobs — library scans, metadata refresh, session cleanup.
+        Triggers run automatically; you can also start or cancel any task manually.
+      </p>
+
+      {Object.entries(byCategory).map(([category, categoryTasks]) => (
+        <div key={category} className={styles.taskCategory}>
+          <h3 className={styles.taskCategoryTitle}>{category}</h3>
+          <div className={styles.nodeList}>
+            {categoryTasks.map(task => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                onRun={() => run(task.id)}
+                onCancel={() => cancel(task.id)}
+                editing={editing === task.id}
+                onToggleEdit={() => setEditing(e => e === task.id ? null : task.id)}
+                onSaved={load}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function TaskRow({ task, onRun, onCancel, editing, onToggleEdit, onSaved }) {
+  const running = task.status === 'running' || task.status === 'cancelling'
+  const result  = normalizeResult(task.last_result)
+
+  return (
+    <div className={`${styles.nodeCard} ${!task.is_enabled ? styles.disabled : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+        <div className={styles.nodeInfo}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <strong>{task.name}</strong>
+            {running && <span style={badge('#7c6af7')}>{task.status}</span>}
+            {!task.is_enabled && <span style={badge('#888')}>disabled</span>}
+          </div>
+          <span className={styles.nodeMeta}>{task.description}</span>
+          <span className={styles.nodeMeta}>
+            {describeTriggers(task.triggers)}
+            {result && (
+              <>
+                {' · last run '}
+                <span style={{ color: TASK_STATUS_COLOR[result.status] ?? 'inherit' }}>{result.status}</span>
+                {' '}{timeAgo(result.endedAt)}
+                {result.durationMs != null && ` (${(result.durationMs / 1000).toFixed(1)}s)`}
+                {result.status === 'failed' && result.errorMessage && ` — ${result.errorMessage}`}
+              </>
+            )}
+          </span>
+        </div>
+
+        <div className={styles.nodeActions} style={{ alignItems: 'flex-start' }}>
+          <button className="ghost" onClick={onToggleEdit}>{editing ? 'Close' : 'Schedule'}</button>
+          {running ? (
+            <button className="danger" onClick={onCancel} disabled={task.status === 'cancelling'}>
+              {task.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}
+            </button>
+          ) : (
+            <button className="primary" onClick={onRun}>Run now</button>
+          )}
+        </div>
+      </div>
+
+      {task.status === 'running' && (
+        <div className={styles.taskProgressTrack}>
+          <div
+            className={styles.taskProgressFill}
+            style={{ width: task.progress != null ? `${task.progress}%` : '100%' }}
+          />
+        </div>
+      )}
+
+      {editing && <TaskScheduleEditor task={task} onSaved={() => { onSaved(); onToggleEdit() }} />}
+    </div>
+  )
+}
+
+function describeTriggers(triggers) {
+  if (!triggers?.length) return 'No triggers — manual only'
+  return triggers.map(t => {
+    if (t.type === 'startup')  return 'On startup'
+    if (t.type === 'interval') return `Every ${(t.intervalMs / 3_600_000).toFixed(1).replace(/\.0$/, '')}h`
+    if (t.type === 'daily')    return `Daily at ${t.timeOfDay}`
+    return t.type
+  }).join(' · ')
+}
+
+function TaskScheduleEditor({ task, onSaved }) {
+  const initialInterval = task.triggers?.find(t => t.type === 'interval')
+  const initialDaily     = task.triggers?.find(t => t.type === 'daily')
+
+  const [onStartup, setOnStartup]     = useState(!!task.triggers?.find(t => t.type === 'startup'))
+  const [intervalOn, setIntervalOn]   = useState(!!initialInterval)
+  const [intervalHrs, setIntervalHrs] = useState(initialInterval ? initialInterval.intervalMs / 3_600_000 : 12)
+  const [dailyOn, setDailyOn]         = useState(!!initialDaily)
+  const [timeOfDay, setTimeOfDay]     = useState(initialDaily?.timeOfDay ?? '03:00')
+  const [enabled, setEnabled]         = useState(task.is_enabled)
+  const [saving, setSaving]           = useState(false)
+  const [error, setError]             = useState(null)
+
+  async function save(e) {
+    e.preventDefault()
+    setSaving(true)
+    setError(null)
+    const triggers = []
+    if (onStartup)  triggers.push({ type: 'startup' })
+    if (intervalOn) triggers.push({ type: 'interval', intervalMs: Math.round(Number(intervalHrs) * 3_600_000) })
+    if (dailyOn)    triggers.push({ type: 'daily', timeOfDay })
+    try {
+      await api.put(`/tasks/${task.id}/triggers`, { triggers, is_enabled: enabled })
+      onSaved()
+    } catch (err) {
+      setError(err.response?.data?.error ?? 'Failed to save schedule')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form className={styles.card} style={{ marginTop: 0 }} onSubmit={save}>
+      {error && <div className={styles.inlineError}>{error}</div>}
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+        Enabled — allow triggers to fire automatically
+      </label>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <input type="checkbox" checked={onStartup} onChange={e => setOnStartup(e.target.checked)} />
+        Run on startup
+      </label>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <input type="checkbox" checked={intervalOn} onChange={e => setIntervalOn(e.target.checked)} />
+        Run every
+        <input
+          type="number" min="0.5" step="0.5" style={{ width: 64 }}
+          value={intervalHrs} disabled={!intervalOn}
+          onChange={e => setIntervalHrs(e.target.value)}
+        />
+        hours
+      </label>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <input type="checkbox" checked={dailyOn} onChange={e => setDailyOn(e.target.checked)} />
+        Run daily at
+        <input
+          type="time" style={{ width: 110 }}
+          value={timeOfDay} disabled={!dailyOn}
+          onChange={e => setTimeOfDay(e.target.value)}
+        />
+      </label>
+
+      <div className={styles.formFooter}>
+        <button className="primary" type="submit" disabled={saving}>
+          {saving ? 'Saving…' : 'Save schedule'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+// ─── Overview ────────────────────────────────────────────────────────────────
+
+const ACTIVITY_SEVERITY_COLOR = { info: '#7c6af7', warning: '#f0a500', error: '#e05555' }
+
+function OverviewTab({ onNavigate }) {
+  const [serverInfo, setServerInfo] = useState(null)
+  const [counts, setCounts]         = useState(null)
+  const [tasks, setTasks]           = useState([])
+  const [nodes, setNodes]           = useState([])
+  const [activity, setActivity]     = useState([])
+  const [scanning, setScanning]     = useState(false)
+
+  const load = useCallback(() => {
+    Promise.all([
+      api.get('/server/info'),
+      api.get('/media/counts'),
+      api.get('/tasks'),
+      api.get('/transcoders'),
+      api.get('/activity', { params: { limit: 7 } }),
+    ]).then(([info, cnt, taskList, nodeList, activityList]) => {
+      setServerInfo(info.data)
+      setCounts(cnt.data)
+      setTasks(taskList.data)
+      setNodes(nodeList.data)
+      setActivity(activityList.data)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    load()
+    const interval = setInterval(load, 5000)
+    return () => clearInterval(interval)
+  }, [load])
+
+  async function scanAllLibraries() {
+    const scanTask = tasks.find(t => t.id === 'scan-libraries')
+    if (!scanTask) return
+    setScanning(true)
+    try { await api.post(`/tasks/${scanTask.id}/run`); load() }
+    catch { /* button just stops spinning; task list poll will show the real state */ }
+    finally { setScanning(false) }
+  }
+
+  const runningTasks   = tasks.filter(t => t.status === 'running')
+  const nodesOnline    = nodes.filter(n => n.is_enabled && n.last_seen_at && (Date.now() - new Date(n.last_seen_at)) < 120_000).length
+  const activeSessions = nodes.reduce((sum, n) => sum + (n.active_sessions ?? 0), 0)
+
+  return (
+    <div className={styles.sectionWide}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20 }}>
+        {/* Server info */}
+        <div className={styles.card}>
+          <h3>Server</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+            <span><strong>{serverInfo?.name ?? '—'}</strong></span>
+            <span className={styles.nodeMeta}>Version {serverInfo?.version ?? '—'} · API {serverInfo?.api_version ?? '—'}</span>
+            <span className={styles.nodeMeta}>{serverInfo?.transcoder_nodes_online ?? 0} transcoder node(s) online</span>
+          </div>
+          <button className="primary" onClick={scanAllLibraries} disabled={scanning} style={{ alignSelf: 'flex-start' }}>
+            {scanning ? 'Starting…' : 'Scan All Libraries'}
+          </button>
+        </div>
+
+        {/* Item counts */}
+        <div className={styles.card}>
+          <h3>Library</h3>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <StatsTile label="Movies"   value={counts?.movies   ?? '—'} accent="#7c6af7" />
+            <StatsTile label="Series"   value={counts?.series   ?? '—'} accent="#4caf7d" />
+            <StatsTile label="Episodes" value={counts?.episodes ?? '—'} accent="#f0a500" />
+          </div>
+        </div>
+
+        {/* Transcoders at a glance */}
+        <div className={styles.card}>
+          <h3>Transcoders</h3>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <StatsTile label="Online" value={`${nodesOnline}/${nodes.length}`} accent="#4caf7d" />
+            <StatsTile label="Active sessions" value={activeSessions} accent="#7c6af7" />
+          </div>
+          <button className="ghost" style={{ alignSelf: 'flex-start' }} onClick={() => onNavigate('transcoders')}>
+            View nodes →
+          </button>
+        </div>
+
+        {/* Running tasks */}
+        <div className={styles.card}>
+          <h3>Running Tasks</h3>
+          {runningTasks.length === 0 ? (
+            <p className={styles.empty}>Nothing running right now.</p>
+          ) : (
+            <div className={styles.nodeList}>
+              {runningTasks.map(t => (
+                <div key={t.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 13 }}>{t.name}</span>
+                  <div className={styles.taskProgressTrack}>
+                    <div className={styles.taskProgressFill} style={{ width: t.progress != null ? `${t.progress}%` : '100%' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="ghost" style={{ alignSelf: 'flex-start' }} onClick={() => onNavigate('tasks')}>
+            View all tasks →
+          </button>
+        </div>
+      </div>
+
+      {/* Recent activity */}
+      <div className={styles.card}>
+        <h3>Recent Activity</h3>
+        {activity.length === 0 ? (
+          <p className={styles.empty}>Nothing to show yet.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {activity.map(a => <ActivityLine key={a.id} entry={a} />)}
+          </div>
+        )}
+        <button className="ghost" style={{ alignSelf: 'flex-start' }} onClick={() => onNavigate('activity')}>
+          View all activity →
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ActivityLine({ entry }) {
+  const color = ACTIVITY_SEVERITY_COLOR[entry.severity] ?? ACTIVITY_SEVERITY_COLOR.info
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13 }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, marginTop: 5, flexShrink: 0 }} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span>{entry.message}</span>
+        <span className={styles.nodeMeta}>{timeAgo(entry.created_at)}</span>
+      </div>
+    </div>
+  )
+}
+
+// ─── Activity ────────────────────────────────────────────────────────────────
+
+function ActivityTab() {
+  const [entries, setEntries] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [hasMore, setHasMore] = useState(true)
+
+  const loadFirst = useCallback(() => {
+    setLoading(true)
+    api.get('/activity', { params: { limit: 30 } })
+      .then(r => { setEntries(r.data); setHasMore(r.data.length === 30) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { loadFirst() }, [loadFirst])
+
+  async function loadMore() {
+    const before = entries[entries.length - 1]?.created_at
+    if (!before) return
+    const { data } = await api.get('/activity', { params: { limit: 30, before } })
+    setEntries(prev => [...prev, ...data])
+    setHasMore(data.length === 30)
+  }
+
+  return (
+    <div className={styles.section}>
+      <p className={styles.sectionDesc}>
+        Server audit trail — logins, library scans, plugin and user changes, failed scheduled tasks.
+      </p>
+      {loading ? (
+        <p className={styles.empty}>Loading…</p>
+      ) : entries.length === 0 ? (
+        <p className={styles.empty}>No activity recorded yet.</p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {entries.map(entry => <ActivityLine key={entry.id} entry={entry} />)}
+          </div>
+          {hasMore && (
+            <button className="ghost" style={{ alignSelf: 'flex-start' }} onClick={loadMore}>
+              Load more
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }

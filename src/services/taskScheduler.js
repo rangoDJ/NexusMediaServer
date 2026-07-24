@@ -25,6 +25,7 @@
  */
 
 import { EventEmitter } from 'events'
+import { logActivity } from './activityLog.js'
 
 const MAX_HISTORY = 20          // rows kept in task_results per task
 const STARTUP_DELAY_MS = 5_000  // grace period before startup triggers fire
@@ -245,6 +246,16 @@ export class TaskScheduler extends EventEmitter {
     state._abort     = null
 
     await this.#saveResult(task.id, lastResult)
+
+    // Only failures are feed-worthy — logging every routine success would
+    // drown the activity feed in noise (this task alone can run every 30min).
+    if (status === 'failed') {
+      logActivity(this.#db, this.#log, {
+        type: 'task.failed', severity: 'error',
+        message: `Scheduled task "${task.name}" failed — ${errorMessage}`,
+        details: { task_id: task.id },
+      })
+    }
 
     const icon = status === 'completed' ? '✓' : status === 'cancelled' ? '⊘' : '✗'
     this.#log.info(
