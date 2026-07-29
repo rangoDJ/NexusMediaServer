@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import styles from './Settings.module.css'
 
@@ -22,9 +21,6 @@ export default function Settings() {
   const [activeTab, setActiveTab] = useState('overview')
   const [settings, setSettings] = useState(null)
   const [toast, setToast] = useState(null)
-  const navigate = useNavigate()
-
-  const user = JSON.parse(localStorage.getItem('nexus_user') ?? '{}')
 
   const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type })
@@ -64,23 +60,17 @@ export default function Settings() {
     }
   }
 
-  function logout() {
-    localStorage.clear()
-    navigate('/login')
-  }
-
   if (!settings) {
     return <div className={styles.loading}>Loading settings…</div>
   }
 
   return (
     <div className={styles.layout}>
+      {/* Section nav for Settings only. The app's own navigation lives in the
+          shared rail — this is a second level within one page, not a second
+          shell, which is what it used to be. */}
       <aside className={styles.sidebar}>
-        <div className={styles.brand}>
-          <span className={styles.brandName}>Nexus</span>
-          <span className={styles.brandSub}>Admin</span>
-        </div>
-        <nav>
+        <nav className={styles.sectionNav}>
           {TABS.map(tab => (
             <button
               key={tab.id}
@@ -91,10 +81,6 @@ export default function Settings() {
             </button>
           ))}
         </nav>
-        <div className={styles.sidebarFooter}>
-          <span className={styles.userChip}>{user.username}</span>
-          <button className="ghost" onClick={logout}>Sign out</button>
-        </div>
       </aside>
 
       <main className={styles.main}>

@@ -1,0 +1,153 @@
+/* ============================================================================
+   CONTEXTUAL TOP BAR
+   Transparent at rest, glass once content scrolls beneath it.
+   ========================================================================== */
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  height: var(--topbar-h);
+  padding: 0 var(--space-6);
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  transition: background var(--dur) var(--ease-out),
+              border-color var(--dur) var(--ease-out);
+}
+
+.scrolled {
+  background: color-mix(in srgb, var(--surface-0) 78%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  border-bottom-color: var(--line);
+}
+
+/* Detail pages carry their own hero title, so the bar floats over artwork.
+   The scrim keeps the controls legible against an unpredictable backdrop. */
+.immersive:not(.scrolled) {
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.45), transparent);
+}
+
+/* ── Title ───────────────────────────────────────────────────────────────── */
+.title {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+/* ── Search ──────────────────────────────────────────────────────────────── */
+.search {
+  flex: 1 1 auto;
+  max-width: 420px;
+  margin-left: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.searchIcon {
+  position: absolute;
+  left: var(--space-3);
+  display: flex;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--space-3) 0 34px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  border: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+.searchInput:focus { background: var(--surface-2); }
+/* The UA clear affordance collides with the rounded field on WebKit. */
+.searchInput::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+/* ── User ────────────────────────────────────────────────────────────────── */
+.user {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--amber), var(--magenta));
+  color: #16040E;
+  font-weight: 700;
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--dur-fast) var(--ease-spring);
+}
+.avatar:hover { transform: scale(1.08); }
+.avatar:active { transform: scale(0.95); }
+
+.menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  min-width: 200px;
+  padding: var(--space-1);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-4);
+}
+
+.userInfo { padding: var(--space-3); }
+.userName {
+  font-weight: 600;
+  font-size: var(--text-base);
+  margin: 0;
+}
+.userRole {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  margin: 2px 0 0;
+}
+
+.divider {
+  height: 1px;
+  background: var(--line-soft);
+  margin: var(--space-1) 0;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  text-align: left;
+  font-size: var(--text-base);
+  color: var(--text);
+}
+.menuItem:hover { background: var(--surface-2); }
+
+/* ── Mobile ──────────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .bar {
+    gap: var(--space-3);
+    padding: 0 var(--space-4);
+  }
+  /* The rail's bottom bar already names the destination — a second heading in
+     a 375px-wide bar just crowds out the search field. */
+  .title { display: none; }
+  .search { max-width: none; }
+}

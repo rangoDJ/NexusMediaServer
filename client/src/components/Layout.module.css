@@ -1,0 +1,32 @@
+/* ============================================================================
+   APPLICATION SHELL
+   The rail is fixed; the main column is offset by its collapsed width. That
+   offset never changes — the rail expands as an overlay — so hovering it
+   cannot reflow the page.
+   ========================================================================== */
+.shell {
+  min-height: 100%;
+}
+
+.main {
+  margin-left: var(--rail-w);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* Contains the sticky top bar and gives pages a predictable width to lay
+     out against without reaching for the viewport. */
+  min-width: 0;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .main {
+    margin-left: 0;
+    /* Clear the bottom tab bar, plus the home indicator on iOS. */
+    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
+}
