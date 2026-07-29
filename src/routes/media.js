@@ -4,6 +4,7 @@ import { stat } from 'fs/promises'
 import { extname, dirname, join } from 'path'
 import { pickTranscoder } from '../services/transcoderPool.js'
 import { fetchMovieById, fetchSeriesById, searchTmdb } from '../services/tmdb.js'
+import { libraryFilterCondition, canAccessMediaItem, canAccessEpisode } from '../services/libraryAccess.js'
 
 // Codecs natively supported for direct play in common mobile/browser environments.
 // Mobile apps pass their own list via ?client_codecs= to get an accurate answer.
@@ -54,6 +55,9 @@ export default async function mediaRoutes(app) {
     if (type)       { params.push(type);       conditions.push(`m.type=$${params.length}`) }
     if (search)     { params.push(`%${search}%`); conditions.push(`m.title ILIKE $${params.length}`) }
     if (genre)      { params.push(genre);      conditions.push(`$${params.length} = ANY(m.genres)`) }
+
+    const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
+    if (libCond) conditions.push(libCond)
 
     const ORDER_BY = {
       alphabetical:   'm.sort_title NULLS LAST, m.title',
@@ -126,20 +130,25 @@ export default async function mediaRoutes(app) {
 
   // Items the user started but hasn't finished, newest first
   app.get('/continue-watching', async (request) => {
+    const params = [request.user.sub]
+    const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
     const { rows } = await app.db.query(`
       SELECT m.id, m.type, m.title, m.year, m.poster_url, m.duration_secs,
              wp.position_secs, wp.updated_at
       FROM watch_progress wp
       JOIN media_items m ON m.id = wp.media_item_id
       WHERE wp.user_id = $1 AND wp.completed = false AND wp.position_secs > 30
+        ${libCond ? `AND ${libCond}` : ''}
       ORDER BY wp.updated_at DESC
       LIMIT 20
-    `, [request.user.sub])
+    `, params)
     return rows
   })
 
   // Items the current user has starred, newest first
   app.get('/favorites', async (request) => {
+    const params = [request.user.sub]
+    const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
     const { rows } = await app.db.query(`
       SELECT m.id, m.type, m.title, m.year, m.poster_url, m.backdrop_url,
              m.duration_secs, m.metadata, uf.created_at AS favorited_at,
@@ -153,9 +162,10 @@ export default async function mediaRoutes(app) {
       JOIN media_items m ON m.id = uf.media_item_id
       LEFT JOIN watch_progress wp ON wp.media_item_id = m.id AND wp.user_id = $1
       WHERE uf.user_id = $1
+        ${libCond ? `AND ${libCond}` : ''}
       ORDER BY uf.created_at DESC
       LIMIT 50
-    `, [request.user.sub])
+    `, params)
     return rows.map(r => {
       applyLocalArtwork(r)
       delete r.metadata
@@ -165,6 +175,8 @@ export default async function mediaRoutes(app) {
 
   // Next unwatched episode for each series the user has started, newest first
   app.get('/next-up', async (request) => {
+    const params = [request.user.sub]
+    const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
     const { rows } = await app.db.query(`
       WITH last_watched_order AS (
         SELECT e.series_id,
@@ -191,9 +203,10 @@ export default async function mediaRoutes(app) {
       JOIN media_items m ON m.id = e.series_id
       LEFT JOIN watch_progress wp ON wp.episode_id = e.id AND wp.user_id = $1
       WHERE COALESCE(wp.completed, false) = false
+        ${libCond ? `AND ${libCond}` : ''}
       ORDER BY e.series_id, e.season_number, e.episode_number
       LIMIT 20
-    `, [request.user.sub])
+    `, params)
     return rows.map(r => {
       applyLocalArtwork(r)
       delete r.metadata
@@ -203,6 +216,9 @@ export default async function mediaRoutes(app) {
 
   // Single media item with full metadata
   app.get('/:id', async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query('SELECT * FROM media_items WHERE id=$1', [request.params.id])
     if (!rows.length) return reply.code(404).send({ error: 'Not found' })
     const item = applyLocalArtwork(rows[0])
@@ -264,10 +280,16 @@ export default async function mediaRoutes(app) {
 
     let item
     if (episode_id) {
+      if (!(await canAccessEpisode(app.db, request.user, episode_id))) {
+        return reply.code(404).send({ error: 'Episode not found' })
+      }
       const { rows } = await app.db.query('SELECT * FROM episodes WHERE id=$1', [episode_id])
       if (!rows.length) return reply.code(404).send({ error: 'Episode not found' })
       item = rows[0]
     } else {
+      if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+        return reply.code(404).send({ error: 'Not found' })
+      }
       const { rows } = await app.db.query('SELECT * FROM media_items WHERE id=$1', [request.params.id])
       if (!rows.length) return reply.code(404).send({ error: 'Not found' })
       item = rows[0]

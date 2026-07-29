@@ -1,5 +1,7 @@
 import Fastify from 'fastify'
 import fjwt from '@fastify/jwt'
+import fcookie from '@fastify/cookie'
+import helmet from '@fastify/helmet'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import swagger from '@fastify/swagger'
@@ -78,14 +80,57 @@ await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute' }
 
 // ── CORS (only needed in dev — in prod everything is same-origin) ─────────────
 if (process.env.NODE_ENV === 'development') {
-  await app.register(cors, { origin: 'http://localhost:5173' })
+  await app.register(cors, { origin: 'http://localhost:5173', credentials: true })
 }
+
+// ── Cookies (httpOnly auth cookies — see routes/auth.js) ──────────────────────
+await app.register(fcookie)
+
+// ── Security headers / CSP ─────────────────────────────────────────────────────
+// Auth is now cookie-based (httpOnly), so a CSP is the main remaining backstop
+// against token theft via a future XSS. connect-src/media-src 'self' covers the
+// SPA's own API + HLS playback; no external origins are ever loaded.
+await app.register(helmet, {
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'"], // CSS-in-JS / inline styles used by the client build
+      imgSrc:     ["'self'", 'data:', 'blob:'],
+      mediaSrc:   ["'self'", 'blob:'],
+      connectSrc: ["'self'"],
+      workerSrc:  ["'self'", 'blob:'], // hls.js worker mode
+      objectSrc:  ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  // Cross-origin isolation headers break same-origin <img>/<video> loads from
+  // the transcoder-proxied endpoints in some setups; not needed for this app.
+  crossOriginEmbedderPolicy: false,
+})
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   console.error('FATAL: JWT_SECRET must be at least 32 characters. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"')
   process.exit(1)
 }
-await app.register(fjwt, { secret: process.env.JWT_SECRET })
+// Bearer header still works (mobile apps, API scripts); when absent, fall
+// back to the httpOnly cookie set by routes/auth.js — this is what lets the
+// web SPA authenticate <video>/<img>/<track>/EventSource/hls.js requests
+// without ever touching the token in JS (see client/src/api/client.js).
+await app.register(fjwt, {
+  secret: process.env.JWT_SECRET,
+  cookie: { cookieName: 'nexus_access', signed: false },
+})
+
+// The transcoder is a separate service — possibly on a different, GPU-equipped
+// host reachable over the network (see docker-compose.yml). Its shared secret
+// gates unauthenticated ffmpeg/ffprobe execution and session control, so it
+// deserves the same strength floor as JWT_SECRET rather than being allowed to
+// run with the .env.example placeholder.
+if (!process.env.TRANSCODER_SECRET || process.env.TRANSCODER_SECRET.length < 32) {
+  console.error('FATAL: TRANSCODER_SECRET must be at least 32 characters. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"')
+  process.exit(1)
+}
 
 app.decorate('authenticate', authMiddleware)
 app.decorate('db', await createPool())

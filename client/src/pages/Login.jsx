@@ -19,8 +19,8 @@ export default function Login() {
         device_name: 'Web Browser',
         device_type: 'web',
       })
-      localStorage.setItem('nexus_token', data.access_token)
-      localStorage.setItem('nexus_refresh_token', data.refresh_token)
+      // Access/refresh tokens are set as httpOnly cookies by the server —
+      // only the non-sensitive user record (for UI display) is kept here.
       localStorage.setItem('nexus_user', JSON.stringify(data.user))
       navigate('/')
     } catch (err) {

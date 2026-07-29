@@ -2,8 +2,10 @@
  * Server-Sent Events endpoint — GET /api/v1/events
  *
  * Clients subscribe here to receive real-time scan progress and library-changed
- * notifications without polling.  Authentication uses the same ?token= query
- * param pattern as the HLS stream routes — EventSource cannot set custom headers.
+ * notifications without polling. EventSource can't set an Authorization header,
+ * so this accepts the JWT via the httpOnly access-token cookie (sent
+ * automatically for same-origin requests) or, for non-browser clients, a
+ * ?token= query param.
  *
  * Event stream format (each line is a raw SSE "data:" message):
  *   data: {"type":"connected"}\n\n
@@ -15,10 +17,8 @@
 export default async function eventsRoute(app) {
   app.get('/events', { schema: { hide: true } }, async (request, reply) => {
     // ── Authentication ────────────────────────────────────────────────────────
-    // EventSource can't set Authorization headers, so we accept the JWT as a
-    // query param (same pattern as /stream routes for Safari HLS).
-    const token = request.query.token
-    if (!token) return reply.code(401).send({ error: 'token query param required' })
+    const token = request.query.token ?? request.cookies?.nexus_access
+    if (!token) return reply.code(401).send({ error: 'Not authenticated' })
 
     try {
       app.jwt.verify(token)

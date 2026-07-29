@@ -2,13 +2,14 @@ import { unlink } from 'fs/promises'
 import axios from 'axios'
 import { requireAdmin } from '../middleware/auth.js'
 import { scanLibrary, cancelScan, isScanRunning } from '../services/scanner.js'
+import { getAllowedLibraryIds } from '../services/libraryAccess.js'
 
 const VALID_LIBRARY_TYPES = new Set(['movies', 'series', 'tv'])
 
 export default async function libraryRoutes(app) {
   app.addHook('preHandler', app.authenticate)
 
-  app.get('/', async () => {
+  app.get('/', async (request) => {
     const { rows } = await app.db.query(`
       SELECT l.id, l.name, l.type, l.paths, l.scan_status, l.last_scanned_at,
              COUNT(m.id)::int AS item_count,
@@ -19,7 +20,8 @@ export default async function libraryRoutes(app) {
       GROUP BY l.id
       ORDER BY l.name
     `)
-    return rows
+    const allowed = await getAllowedLibraryIds(app.db, request.user)
+    return allowed === null ? rows : rows.filter(l => allowed.has(l.id))
   })
 
   app.post('/', { preHandler: requireAdmin }, async (request, reply) => {

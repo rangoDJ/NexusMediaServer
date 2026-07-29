@@ -100,7 +100,7 @@ async function pickNode(db) {
     SELECT id, url FROM transcoder_nodes
     WHERE is_enabled = true
       AND last_seen_at > now() - interval '2 minutes'
-    ORDER BY current_sessions ASC
+    ORDER BY active_sessions ASC
     LIMIT 1
   `)
   return rows[0] ?? null

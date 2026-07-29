@@ -8,12 +8,34 @@ import { logActivity } from '../services/activityLog.js'
 // as bcrypt hashes so a DB breach doesn't yield usable tokens.
 
 const ACCESS_TOKEN_TTL = '1d'
+const ACCESS_TOKEN_TTL_SECS = 24 * 60 * 60
 
 function generateRefreshToken() {
   return crypto.randomBytes(48).toString('base64url')
 }
 
-async function issueTokens(app, db, user, { device_name, device_type, ip_address, user_agent } = {}) {
+// httpOnly + SameSite=Strict cookies are the primary auth channel for the web
+// SPA — they can't be read or exfiltrated by JS (unlike the old localStorage
+// tokens), which closes off persistent account takeover via a future XSS bug.
+// The refresh cookie is scoped to /api/v1/auth so it's never sent on ordinary
+// API/media requests. Tokens are still also returned in the JSON body for
+// non-browser API clients (mobile apps, scripts) that manage their own storage.
+function setAuthCookies(reply, { access_token, refresh_token }, sessionDays) {
+  const secure = process.env.NODE_ENV === 'production'
+  reply.setCookie('nexus_access', access_token, {
+    httpOnly: true, sameSite: 'strict', secure, path: '/', maxAge: ACCESS_TOKEN_TTL_SECS,
+  })
+  reply.setCookie('nexus_refresh', refresh_token, {
+    httpOnly: true, sameSite: 'strict', secure, path: '/api/v1/auth', maxAge: sessionDays * 86_400,
+  })
+}
+
+function clearAuthCookies(reply) {
+  reply.clearCookie('nexus_access',  { path: '/' })
+  reply.clearCookie('nexus_refresh', { path: '/api/v1/auth' })
+}
+
+async function issueTokens(app, reply, db, user, { device_name, device_type, ip_address, user_agent } = {}) {
   const sessionDays = await getSetting(db, 'auth.session_days', 30)
   const accessToken = app.jwt.sign(
     { sub: user.id, username: user.username, role: user.role },
@@ -30,7 +52,9 @@ async function issueTokens(app, db, user, { device_name, device_type, ip_address
     VALUES($1,$2,$3,$4,$5,$6,$7,$8)
   `, [user.id, tokenHash, tokenPrefix, device_name ?? null, device_type ?? null, ip_address ?? null, user_agent ?? null, expiresAt])
 
-  return { access_token: accessToken, refresh_token: refreshToken }
+  const tokens = { access_token: accessToken, refresh_token: refreshToken }
+  setAuthCookies(reply, tokens, sessionDays)
+  return tokens
 }
 
 const AUTH_RATE_LIMIT = { max: 10, timeWindow: '1 minute' }
@@ -73,7 +97,7 @@ export default async function authRoutes(app) {
       }
     }
 
-    const tokens = await issueTokens(app, app.db, user, {
+    const tokens = await issueTokens(app, reply, app.db, user, {
       device_name, device_type,
       ip_address: request.ip,
       user_agent: request.headers['user-agent'],
@@ -111,7 +135,7 @@ export default async function authRoutes(app) {
       }
     }
 
-    const tokens = await issueTokens(app, app.db, user, {
+    const tokens = await issueTokens(app, reply, app.db, user, {
       device_name, device_type,
       ip_address: request.ip,
       user_agent: request.headers['user-agent'],
@@ -128,7 +152,10 @@ export default async function authRoutes(app) {
 
   // Exchange a refresh token for a new access + refresh token pair (rotation).
   app.post('/refresh', { config: { rateLimit: AUTH_RATE_LIMIT } }, async (request, reply) => {
-    const { refresh_token } = request.body
+    // The web client no longer sends this in the body — the refresh cookie
+    // (scoped to /api/v1/auth) is included automatically. Body support is
+    // kept for non-browser API clients that manage their own token storage.
+    const refresh_token = request.body?.refresh_token ?? request.cookies?.nexus_refresh
     if (!refresh_token) return reply.code(400).send({ error: 'refresh_token required' })
 
     // Use the token prefix (first 16 chars, stored plaintext) to find the
@@ -155,13 +182,33 @@ export default async function authRoutes(app) {
     await app.db.query('UPDATE refresh_tokens SET revoked_at=now() WHERE id=$1', [match.id])
 
     const user = { id: match.user_id, username: match.username, role: match.role }
-    const tokens = await issueTokens(app, app.db, user, {
+    const tokens = await issueTokens(app, reply, app.db, user, {
       device_name: match.device_name,
       device_type: match.device_type,
       ip_address: request.ip,
       user_agent: request.headers['user-agent'],
     })
     return { ...tokens, user }
+  })
+
+  // Revoke the current session's refresh token and clear auth cookies.
+  app.post('/logout', async (request, reply) => {
+    const refresh_token = request.body?.refresh_token ?? request.cookies?.nexus_refresh
+    if (refresh_token) {
+      const prefix = refresh_token.slice(0, 16)
+      const { rows } = await app.db.query(
+        `SELECT id, token_hash FROM refresh_tokens WHERE token_prefix=$1 AND revoked_at IS NULL`,
+        [prefix]
+      )
+      for (const row of rows) {
+        if (await bcrypt.compare(refresh_token, row.token_hash)) {
+          await app.db.query('UPDATE refresh_tokens SET revoked_at=now() WHERE id=$1', [row.id])
+          break
+        }
+      }
+    }
+    clearAuthCookies(reply)
+    return reply.code(204).send()
   })
 
   app.get('/me', { preHandler: app.authenticate }, async (request) => {
@@ -195,7 +242,7 @@ export default async function authRoutes(app) {
 
   // Revoke all sessions except the current one (logout everywhere)
   app.delete('/devices', { preHandler: app.authenticate }, async (request, reply) => {
-    const { current_refresh_token } = request.body ?? {}
+    const current_refresh_token = request.body?.current_refresh_token ?? request.cookies?.nexus_refresh
 
     let keepId = null
     if (current_refresh_token) {

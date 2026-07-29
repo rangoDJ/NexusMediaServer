@@ -32,12 +32,12 @@ const MIME_BY_CONTAINER = {
 // catches up.
 const SEEK_RESTART_THRESHOLD_SECS = 30
 
-function formatBitrate(kbps) {
+export function formatBitrate(kbps) {
   if (!kbps) return '—'
   return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} Kbps`
 }
 
-function formatTime(secs) {
+export function formatTime(secs) {
   if (secs == null || !isFinite(secs) || secs < 0) return '0:00'
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
@@ -50,7 +50,7 @@ function formatTime(secs) {
 /** Parse the standard WebVTT-with-media-fragments trickplay format
  *  ("HH:MM:SS.mmm --> HH:MM:SS.mmm" cues, each pointing at
  *  "trickplay.jpg#xywh=x,y,w,h") into a flat array of sprite regions. */
-function parseTrickplayVtt(text) {
+export function parseTrickplayVtt(text) {
   const TIME_RE = /(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/
   const XYWH_RE = /xywh=(\d+),(\d+),(\d+),(\d+)/
   const toSecs = (h, m, s, ms) => (+h) * 3600 + (+m) * 60 + (+s) + (+ms) / 1000
@@ -77,7 +77,6 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   const videoRef  = useRef(null)
   const hlsRef    = useRef(null) // current hls.js instance, if any
   const lastSaveRef   = useRef(0)
-  const resumeFromRef = useRef(0)
   const menuRef        = useRef(null) // quality menu — outside-click detection
   const subtitleMenuRef = useRef(null)
   const hideControlsTimerRef = useRef(null)
@@ -96,9 +95,13 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   // Absolute offset (seconds) where the current HLS stream begins inside
   // the source file. 0 unless a server-side seek restart shifted it.
   const currentStreamOffsetRef = useRef(0)
-  // Set when the user seeks far beyond the buffer; start() consumes this on
-  // its next run and passes it as start_time_secs to the transcoder.
-  const nextSeekOffsetRef = useRef(0)
+  // Set (to an absolute file position) when the user seeks far beyond the
+  // buffer, or when the quality preset changes mid-playback — both need the
+  // new transcode session to begin at the exact position the old one left
+  // off, not from 0. null = no restart requested, start fresh/resume from
+  // saved progress instead. Explicitly nullable (not 0) so a legitimate
+  // restart-at-position-0 isn't mistaken for "nothing requested".
+  const nextSeekOffsetRef = useRef(null)
   // Mirrors the active transcoder session ID so start() can DELETE the old
   // session immediately without waiting for React state to propagate.
   const liveSessionRef = useRef(null)
@@ -150,17 +153,16 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
   // ── Load trickplay + intro/credits segments when item changes ────────────
   useEffect(() => {
-    const token = localStorage.getItem('nexus_token')
     const base = episodeId
       ? `/api/v1/media/episode/${episodeId}`
       : `/api/v1/media/${mediaItemId}`
 
-    const vttUrl = `${base}/trickplay.vtt?token=${encodeURIComponent(token)}`
-    fetch(vttUrl)
+    const vttUrl = `${base}/trickplay.vtt`
+    fetch(vttUrl, { credentials: 'same-origin' })
       .then(r => r.ok ? r.text() : Promise.reject())
       .then(text => {
         setTrickplayCues(parseTrickplayVtt(text))
-        setTrickplayUrl(`${base}/trickplay.jpg?token=${encodeURIComponent(token)}`)
+        setTrickplayUrl(`${base}/trickplay.jpg`)
       })
       .catch(() => { setTrickplayCues([]); setTrickplayUrl(null) })
 
@@ -197,21 +199,22 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
       setError(null)
 
       try {
+        // Absolute file position, or null if this is a fresh load / no
+        // restart requested (in which case we resume from saved progress
+        // instead). Set by seekToAbsolute() for out-of-buffer seeks AND by
+        // changeQuality() — a quality change must restart the transcode at
+        // the current position too, otherwise the new session starts from 0
+        // and the player is left waiting forever for content that won't
+        // exist until ffmpeg sequentially encodes all the way back to where
+        // playback actually was.
         const startTimeSecs = nextSeekOffsetRef.current
-        nextSeekOffsetRef.current = 0
-        currentStreamOffsetRef.current = startTimeSecs
+        nextSeekOffsetRef.current = null
 
         let savedPos = 0
-        if (startTimeSecs > 0) {
-          savedPos = 0
-        } else if (resumeFromRef.current > 0) {
-          savedPos = Math.max(0, resumeFromRef.current - startTimeSecs)
-          resumeFromRef.current = 0
-        } else {
+        if (startTimeSecs == null) {
           try {
             const { data: prog } = await api.get(progressPath)
-            const absPos = prog.position_secs ?? 0
-            savedPos = Math.max(0, absPos - startTimeSecs)
+            savedPos = Math.max(0, prog.position_secs ?? 0)
           } catch {}
         }
 
@@ -232,16 +235,27 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         }
 
         if (preset.id === 'auto' && pi?.playback?.direct_play && pi?.playback?.direct_play_url) {
-          const token = localStorage.getItem('nexus_token')
-          const url   = `${pi.playback.direct_play_url}&token=${encodeURIComponent(token)}`
+          // Direct play always serves the whole file — there's no "stream
+          // offset" concept the way a partial transcode has; seeking is
+          // just a native in-file jump to the absolute target position.
+          currentStreamOffsetRef.current = 0
+          const target = startTimeSecs ?? savedPos
+          const url   = pi.playback.direct_play_url
           const type  = MIME_BY_CONTAINER[pi.file?.container?.toLowerCase()] ?? 'video/mp4'
           if (cancelled) return
           setMode('direct')
           setSessionId(null)
-          if (savedPos > 5) setSeekToState(savedPos)
+          if (target > 5) setSeekToState(target)
           commitSrc({ src: url, type })
           return
         }
+
+        // Transcode/ABR: when a restart was requested, the new stream begins
+        // exactly at startTimeSecs (baked in as ffmpeg's -ss input offset
+        // server-side) — so its own timeline starts at 0, no post-load seek
+        // needed. Only a fresh load (no restart) needs to jump to savedPos
+        // once the stream is ready.
+        currentStreamOffsetRef.current = startTimeSecs ?? 0
 
         const params = preset.id === 'auto'
           ? { codec: 'h264', resolution: '1080p', variants: true }
@@ -251,7 +265,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           media_item_id: mediaItemId ?? undefined,
           episode_id:    episodeId ?? undefined,
           ...params,
-          ...(startTimeSecs > 0 ? { start_time_secs: startTimeSecs } : {}),
+          ...(startTimeSecs != null ? { start_time_secs: startTimeSecs } : {}),
         })
         if (cancelled) {
           api.delete(`/stream/${data.session_id}`).catch(() => {})
@@ -261,9 +275,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         setMode(data.abr ? 'abr' : 'transcode')
         setSessionId(data.session_id)
         if (savedPos > 5) setSeekToState(savedPos)
-        const hlsToken = localStorage.getItem('nexus_token')
-        const hlsUrl   = `${data.playlist_url}?token=${encodeURIComponent(hlsToken)}`
-        commitSrc({ src: hlsUrl, type: 'application/x-mpegurl' })
+        commitSrc({ src: data.playlist_url, type: 'application/x-mpegurl' })
       } catch (e) {
         if (!cancelled) {
           setSwitching(false)
@@ -287,9 +299,8 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
   function buildTrackList(pi) {
     if (!pi?.subtitle_tracks?.length) return []
-    const token = localStorage.getItem('nexus_token')
     return pi.subtitle_tracks.map(t => ({
-      src:      `${t.url}?token=${encodeURIComponent(token)}`,
+      src:      t.url,
       kind:     'subtitles',
       language: t.language ?? 'und',
       label:    [t.title, t.language?.toUpperCase(), t.forced ? '(forced)' : '']
@@ -308,15 +319,12 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
 
     if (src.type === 'application/x-mpegurl') {
       // Always prefer hls.js over native HLS, even on Safari/iOS where the
-      // browser could technically play it natively — every playlist/segment
-      // endpoint here requires a Bearer auth header, which native <video src>
-      // has no mechanism to send at all (only the top-level manifest URL
-      // carries a ?token= fallback). hls.js's xhrSetup reliably attaches
-      // the header to every request it makes (manifest, sub-playlists,
-      // segments); native playback would silently 401 on segment fetches
-      // and feed the resulting JSON error body to the demuxer.
+      // browser could technically play it natively — for consistent ABR
+      // behavior, error reporting, and the timeout tuning below (auth itself
+      // is no longer a factor either way: both hls.js's XHRs and a native
+      // <video src> automatically carry the httpOnly auth cookie for these
+      // same-origin requests).
       if (Hls.isSupported()) {
-        const token = localStorage.getItem('nexus_token')
         const hls = new Hls({
           // Our API holds the playlist request open for up to 20s while
           // ffmpeg starts producing segments — hls.js's 10s default fires
@@ -326,9 +334,6 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
           manifestLoadingRetryDelay: 500,
           levelLoadingTimeOut:       25_000,
           fragLoadingTimeOut:        20_000,
-          xhrSetup(xhr) {
-            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-          },
         })
         hls.on(Hls.Events.ERROR, (_evt, data) => {
           console.error('[Player] hls.js error:', data)
@@ -338,9 +343,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
         hls.attachMedia(video)
         hlsRef.current = hls
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Only as a last resort when hls.js genuinely can't run in this
-        // browser — segment auth will only work if the server-side token
-        // fallback below covers every URL the manifest references.
+        // Only as a last resort when hls.js genuinely can't run in this browser.
         video.src = src.src
       } else {
         setError('HLS playback is not supported in this browser')
@@ -450,7 +453,7 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
   function changeQuality(newId) {
     setMenuOpen(false)
     if (newId === quality) return
-    resumeFromRef.current = currentStreamOffsetRef.current + Math.floor(videoRef.current?.currentTime ?? 0)
+    nextSeekOffsetRef.current = currentStreamOffsetRef.current + Math.floor(videoRef.current?.currentTime ?? 0)
     localStorage.setItem('nexus_quality', newId)
     setQuality(newId)
   }

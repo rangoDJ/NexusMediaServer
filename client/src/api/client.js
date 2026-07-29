@@ -1,35 +1,28 @@
 import axios from 'axios'
 
-export const api = axios.create({ baseURL: '/api/v1' })
-
-api.interceptors.request.use(config => {
-  const token = localStorage.getItem('nexus_token')
-  if (token) config.headers.Authorization = `Bearer ${token}`
-  return config
-})
+// Auth is httpOnly-cookie-based (see src/routes/auth.js) — the access and
+// refresh tokens never touch JS/localStorage, which closes off persistent
+// account takeover via a future XSS bug. `withCredentials` makes the browser
+// attach those cookies to every request; there is nothing for this client to
+// read or store beyond the non-sensitive `nexus_user` (id/username/role, for
+// UI display only — the server is the real authority on every request).
+export const api = axios.create({ baseURL: '/api/v1', withCredentials: true })
 
 api.interceptors.response.use(
   r => r,
   async err => {
     const original = err.config
 
-    // On 401, try to refresh the access token once before redirecting to login.
+    // On 401, try to refresh the access token once (cookie-based — no body
+    // needed) before redirecting to login.
     if (err.response?.status === 401 && !original._retried) {
       original._retried = true
-      const refreshToken = localStorage.getItem('nexus_refresh_token')
-      if (refreshToken) {
-        try {
-          const { data } = await axios.post('/api/v1/auth/refresh', { refresh_token: refreshToken })
-          localStorage.setItem('nexus_token', data.access_token)
-          localStorage.setItem('nexus_refresh_token', data.refresh_token)
-          original.headers.Authorization = `Bearer ${data.access_token}`
-          return api(original)
-        } catch {
-          // Refresh failed — fall through to logout
-        }
+      try {
+        await axios.post('/api/v1/auth/refresh', {}, { withCredentials: true })
+        return api(original)
+      } catch {
+        // Refresh failed — fall through to logout
       }
-      localStorage.removeItem('nexus_token')
-      localStorage.removeItem('nexus_refresh_token')
       localStorage.removeItem('nexus_user')
       window.location.href = '/login'
     }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import styles from './Settings.module.css'
@@ -43,10 +43,18 @@ export default function Settings() {
       setSettings(prev => {
         const next = { ...prev }
         for (const [key, value] of Object.entries(updates)) {
-          const cat = key.split('.')[0]
-          if (!next[cat]) continue
-          const idx = next[cat].findIndex(s => s.key === key)
-          if (idx !== -1) next[cat][idx] = { ...next[cat][idx], value }
+          // A setting's key prefix (e.g. "auth.", "tmdb.") doesn't necessarily
+          // match its actual category (e.g. category='general'/'metadata') —
+          // search every category's rows instead of guessing from the key.
+          for (const cat of Object.keys(next)) {
+            if (!Array.isArray(next[cat])) continue
+            const idx = next[cat].findIndex(s => s.key === key)
+            if (idx !== -1) {
+              next[cat] = [...next[cat]]
+              next[cat][idx] = { ...next[cat][idx], value }
+              break
+            }
+          }
         }
         return next
       })
@@ -1027,13 +1035,40 @@ function PluginsTab() {
   const [plugins, setPlugins] = useState([])
   const [expanded, setExpanded] = useState(null)
   const [saving, setSaving] = useState(null)
+  const [busy, setBusy] = useState(null)
+  const [showCatalog, setShowCatalog] = useState(false)
 
-  useEffect(() => { api.get('/plugins').then(r => setPlugins(r.data)) }, [])
+  const loadPlugins = useCallback(() => { api.get('/plugins').then(r => setPlugins(r.data)) }, [])
+  useEffect(loadPlugins, [loadPlugins])
 
   async function toggleEnabled(plugin) {
     const next = !plugin.is_enabled
-    await api.patch(`/plugins/${plugin.id}/enabled`, { enabled: next })
-    setPlugins(ps => ps.map(p => p.id === plugin.id ? { ...p, is_enabled: next } : p))
+    const { data } = await api.patch(`/plugins/${plugin.id}/enabled`, { enabled: next })
+    setPlugins(ps => ps.map(p => p.id === plugin.id
+      ? { ...p, is_enabled: next, loaded: next && !data.restart_required }
+      : p
+    ))
+  }
+
+  async function reload(plugin) {
+    setBusy(plugin.id)
+    try {
+      await api.post(`/plugins/${plugin.id}/reload`)
+      loadPlugins()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function uninstall(plugin) {
+    if (!confirm(`Uninstall "${plugin.name}"? This deletes its files and settings.`)) return
+    setBusy(plugin.id)
+    try {
+      await api.delete(`/plugins/${plugin.id}`)
+      setPlugins(ps => ps.filter(p => p.id !== plugin.id))
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function saveSettings(plugin, settings) {
@@ -1046,34 +1081,33 @@ function PluginsTab() {
     }
   }
 
-  if (!plugins.length) {
-    return (
-      <div className={styles.section}>
+  return (
+    <div className={styles.section}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
         <p className={styles.sectionDesc}>
-          No plugins found. Drop a plugin folder or <code>.js</code> file into your plugins
-          directory (<code>PLUGINS_DIR</code> in <code>.env</code>) and restart the server.
+          Plugins are loaded from the <code>PLUGINS_DIR</code> directory on the host.
+          Enable, disable, install, and settings changes all take effect immediately, without a restart.
         </p>
-        <div className={styles.card} style={{ fontFamily: 'monospace', fontSize: 13, lineHeight: 1.8 }}>
+        <button className="ghost" style={{ whiteSpace: 'nowrap' }} onClick={() => setShowCatalog(s => !s)}>
+          {showCatalog ? 'Hide catalog' : 'Browse & install…'}
+        </button>
+      </div>
+
+      {showCatalog && <PluginCatalogPanel onInstalled={loadPlugins} />}
+
+      {!plugins.length && (
+        <div className={styles.card} style={{ fontFamily: 'monospace', fontSize: 13, lineHeight: 1.8, marginTop: 16 }}>
           <strong>Plugin directory structure:</strong>
           <pre style={{ marginTop: 8, color: 'var(--text-muted)' }}>{`plugins/
 ├── my-plugin/
 │   └── index.js     ← exports manifest + hooks
 └── single-file.js   ← also valid`}</pre>
         </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className={styles.section}>
-      <p className={styles.sectionDesc}>
-        Plugins are loaded from the <code>PLUGINS_DIR</code> directory on the host.
-        Enable/disable changes take effect after a server restart. Settings changes are immediate.
-      </p>
+      )}
 
       {plugins.map(plugin => (
         <div key={plugin.id} className={`${styles.nodeCard} ${!plugin.is_enabled ? styles.disabled : ''}`}
-             style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12 }}>
+             style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12, marginTop: 16 }}>
 
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
             <div className={styles.nodeInfo} style={{ flex: 1 }}>
@@ -1097,18 +1131,24 @@ function PluginsTab() {
             </div>
 
             <div className={styles.nodeActions}>
-              {plugin.default_settings && Object.keys(plugin.default_settings).length > 0 && (
+              {plugin.settings_schema && Object.keys(plugin.settings_schema).length > 0 && (
                 <button className="ghost" onClick={() => setExpanded(e => e === plugin.id ? null : plugin.id)}>
                   {expanded === plugin.id ? 'Hide settings' : 'Settings'}
                 </button>
               )}
+              <button className="ghost" disabled={busy === plugin.id} onClick={() => reload(plugin)}>
+                Reload
+              </button>
               <button className="ghost" onClick={() => toggleEnabled(plugin)}>
                 {plugin.is_enabled ? 'Disable' : 'Enable'}
+              </button>
+              <button className="danger" disabled={busy === plugin.id} onClick={() => uninstall(plugin)}>
+                Uninstall
               </button>
             </div>
           </div>
 
-          {expanded === plugin.id && plugin.default_settings && (
+          {expanded === plugin.id && plugin.settings_schema && (
             <PluginSettingsForm
               plugin={plugin}
               onSave={settings => saveSettings(plugin, settings)}
@@ -1117,6 +1157,142 @@ function PluginsTab() {
           )}
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Catalog: repositories + browsable/installable plugins ────────────────────
+
+function PluginCatalogPanel({ onInstalled }) {
+  const [sources, setSources] = useState([])
+  const [catalog, setCatalog] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [newSource, setNewSource] = useState({ name: '', url: '' })
+  const [manualInstall, setManualInstall] = useState({ downloadUrl: '', pluginName: '' })
+  const [installing, setInstalling] = useState(null)
+  const [error, setError] = useState(null)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    Promise.all([api.get('/plugins/catalog/sources'), api.get('/plugins/catalog')])
+      .then(([srcRes, catRes]) => { setSources(srcRes.data); setCatalog(catRes.data) })
+      .catch(() => setError('Failed to load catalog'))
+      .finally(() => setLoading(false))
+  }, [])
+  useEffect(load, [load])
+
+  async function addSource(e) {
+    e.preventDefault()
+    if (!newSource.name || !newSource.url) return
+    try {
+      await api.post('/plugins/catalog/sources', newSource)
+      setNewSource({ name: '', url: '' })
+      load()
+    } catch (err) {
+      setError(err.response?.data?.error ?? 'Failed to add source')
+    }
+  }
+
+  async function removeSource(id) {
+    await api.delete(`/plugins/catalog/sources/${id}`)
+    load()
+  }
+
+  async function installPlugin(downloadUrl, pluginName) {
+    setInstalling(pluginName)
+    setError(null)
+    try {
+      await api.post('/plugins/install', { downloadUrl, pluginName })
+      onInstalled?.()
+      load()
+    } catch (err) {
+      setError(err.response?.data?.error ?? 'Install failed')
+    } finally {
+      setInstalling(null)
+    }
+  }
+
+  async function installFromUrl(e) {
+    e.preventDefault()
+    if (!manualInstall.downloadUrl) return
+    await installPlugin(manualInstall.downloadUrl, manualInstall.pluginName || undefined)
+    setManualInstall({ downloadUrl: '', pluginName: '' })
+  }
+
+  return (
+    <div className={styles.card} style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {error && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{error}</p>}
+
+      {/* Repositories */}
+      <div>
+        <strong style={{ fontSize: 13 }}>Catalog sources</strong>
+        {sources.length === 0 && <p className={styles.rowDesc} style={{ marginTop: 4 }}>No catalog sources configured.</p>}
+        {sources.map(s => (
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+            <span style={{ flex: 1, fontSize: 13 }}>{s.name} — <span style={{ color: 'var(--text-muted)' }}>{s.url}</span></span>
+            <button className="ghost" onClick={() => removeSource(s.id)}>Remove</button>
+          </div>
+        ))}
+        <form onSubmit={addSource} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <input placeholder="Repository name" value={newSource.name}
+                 onChange={e => setNewSource(s => ({ ...s, name: e.target.value }))} />
+          <input placeholder="https://example.com/catalog.json" style={{ flex: 1 }} value={newSource.url}
+                 onChange={e => setNewSource(s => ({ ...s, url: e.target.value }))} />
+          <button className="ghost" type="submit">Add source</button>
+        </form>
+      </div>
+
+      {/* Catalog listing */}
+      <div>
+        <strong style={{ fontSize: 13 }}>Available plugins</strong>
+        {loading && <p className={styles.rowDesc} style={{ marginTop: 4 }}>Loading catalog…</p>}
+        {!loading && catalog.every(s => !s.plugins?.length) && (
+          <p className={styles.rowDesc} style={{ marginTop: 4 }}>
+            No plugins available — add a catalog source above.
+          </p>
+        )}
+        {catalog.map(source => (
+          source.plugins?.length > 0 && (
+            <div key={source.sourceId} style={{ marginTop: 10 }}>
+              <div className={styles.nodeMeta} style={{ marginBottom: 6 }}>{source.repositoryName}</div>
+              {source.plugins.map(p => {
+                const latest = p.versions?.[0]
+                return (
+                  <div key={p.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <strong style={{ fontSize: 13 }}>{p.name}</strong>
+                        {latest?.version && <span className={styles.nodeMeta}>v{latest.version}</span>}
+                        {p.author && <span className={styles.nodeMeta}>by {p.author}</span>}
+                      </div>
+                      {p.description && <p className={styles.rowDesc} style={{ marginTop: 2 }}>{p.description}</p>}
+                    </div>
+                    <button
+                      className="ghost"
+                      disabled={!latest?.downloadUrl || installing === p.id}
+                      onClick={() => installPlugin(latest.downloadUrl, p.id)}
+                    >
+                      {installing === p.id ? 'Installing…' : 'Install'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        ))}
+      </div>
+
+      {/* Manual install */}
+      <div>
+        <strong style={{ fontSize: 13 }}>Install from URL</strong>
+        <form onSubmit={installFromUrl} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <input placeholder="https://.../plugin.js" style={{ flex: 1 }} value={manualInstall.downloadUrl}
+                 onChange={e => setManualInstall(s => ({ ...s, downloadUrl: e.target.value }))} />
+          <input placeholder="Filename (optional)" value={manualInstall.pluginName}
+                 onChange={e => setManualInstall(s => ({ ...s, pluginName: e.target.value }))} />
+          <button className="ghost" type="submit" disabled={installing === manualInstall.pluginName}>Install</button>
+        </form>
+      </div>
     </div>
   )
 }
@@ -1144,41 +1320,77 @@ const badge = (color) => ({
 })
 
 function PluginSettingsForm({ plugin, onSave, saving }) {
-  const [values, setValues] = useState({ ...plugin.settings })
-  const defaults = plugin.default_settings ?? {}
+  const schema = plugin.settings_schema ?? {}
+  const [values, setValues] = useState(() => {
+    const initial = { ...plugin.settings }
+    for (const [key, rule] of Object.entries(schema)) {
+      if (initial[key] === undefined && rule.default !== undefined) initial[key] = rule.default
+    }
+    return initial
+  })
+  const [errors, setErrors] = useState([])
 
-  function labelFor(key) {
-    return key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase())
+  function labelFor(key, rule) {
+    return rule.title || key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase())
   }
 
   function set(key, value) {
     setValues(v => ({ ...v, [key]: value }))
   }
 
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setErrors([])
+    try {
+      await onSave(values)
+    } catch (err) {
+      setErrors(err.response?.data?.error ? [err.response.data.error] : ['Failed to save settings'])
+    }
+  }
+
   return (
     <form className={styles.form} style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}
-          onSubmit={e => { e.preventDefault(); onSave(values) }}>
-      {Object.entries(defaults).map(([key, defaultVal]) => (
+          onSubmit={handleSubmit}>
+      {Object.entries(schema).map(([key, rule]) => (
         <div key={key} className={styles.row}>
           <div className={styles.rowMeta}>
-            <label className={styles.rowLabel}>{labelFor(key)}</label>
+            <label className={styles.rowLabel}>
+              {labelFor(key, rule)}{rule.required && ' *'}
+            </label>
           </div>
           <div className={styles.rowControl}>
-            {typeof defaultVal === 'boolean' ? (
+            {rule.type === 'boolean' ? (
               <label className={styles.toggle}>
                 <input type="checkbox" checked={!!values[key]} onChange={e => set(key, e.target.checked)} />
                 <span className={styles.toggleTrack} />
               </label>
-            ) : typeof defaultVal === 'number' ? (
-              <input type="number" value={values[key] ?? ''} onChange={e => set(key, Number(e.target.value))} />
-            ) : key.toLowerCase().includes('key') || key.toLowerCase().includes('secret') || key.toLowerCase().includes('token') ? (
+            ) : rule.enum ? (
+              <select value={values[key] ?? ''} onChange={e => set(key, e.target.value)}>
+                <option value="" disabled>Select…</option>
+                {rule.enum.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+            ) : rule.type === 'number' ? (
+              <input
+                type="number" min={rule.minimum} max={rule.maximum}
+                value={values[key] ?? ''}
+                onChange={e => set(key, e.target.value === '' ? '' : Number(e.target.value))}
+              />
+            ) : rule.secret ? (
               <input type="password" value={values[key] ?? ''} onChange={e => set(key, e.target.value)} autoComplete="new-password" />
             ) : (
-              <input type="text" value={values[key] ?? ''} onChange={e => set(key, e.target.value)} />
+              <input
+                type="text" minLength={rule.minLength} maxLength={rule.maxLength}
+                value={values[key] ?? ''} onChange={e => set(key, e.target.value)}
+              />
             )}
           </div>
         </div>
       ))}
+      {errors.length > 0 && (
+        <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>
+          {errors.map((e, i) => <div key={i}>{e}</div>)}
+        </div>
+      )}
       <div className={styles.formFooter}>
         <button className="primary" type="submit" disabled={saving}>
           {saving ? 'Saving…' : 'Save plugin settings'}
@@ -1587,6 +1799,7 @@ function SessionsTab() {
 
 function UsersTab() {
   const [users, setUsers] = useState([])
+  const [expanded, setExpanded] = useState(null)
   const currentUser = JSON.parse(localStorage.getItem('nexus_user') ?? '{}')
 
   useEffect(() => { api.get('/users').then(r => setUsers(r.data)) }, [])
@@ -1604,37 +1817,109 @@ function UsersTab() {
 
   return (
     <div className={styles.section}>
-      <p className={styles.sectionDesc}>Manage user accounts. Toggle open registration in General settings.</p>
+      <p className={styles.sectionDesc}>
+        Manage user accounts. Toggle open registration in General settings. Use
+        "Libraries" to restrict a viewer to specific libraries — leaving none
+        selected means they can see everything.
+      </p>
       <table className={styles.table}>
         <thead>
           <tr><th>Username</th><th>Email</th><th>Role</th><th>Joined</th><th /></tr>
         </thead>
         <tbody>
           {users.map(u => (
-            <tr key={u.id}>
-              <td>{u.username}{u.id === currentUser.id && <span className={styles.badge}>you</span>}</td>
-              <td className={styles.muted}>{u.email}</td>
-              <td>
-                <select
-                  value={u.role}
-                  onChange={e => changeRole(u.id, e.target.value)}
-                  disabled={u.id === currentUser.id}
-                  style={{ width: 'auto' }}
-                >
-                  <option value="viewer">Viewer</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </td>
-              <td className={styles.muted}>{new Date(u.created_at).toLocaleDateString()}</td>
-              <td>
-                <button className="danger" onClick={() => remove(u.id)} disabled={u.id === currentUser.id}>
-                  Delete
-                </button>
-              </td>
-            </tr>
+            <Fragment key={u.id}>
+              <tr>
+                <td>{u.username}{u.id === currentUser.id && <span className={styles.badge}>you</span>}</td>
+                <td className={styles.muted}>{u.email}</td>
+                <td>
+                  <select
+                    value={u.role}
+                    onChange={e => changeRole(u.id, e.target.value)}
+                    disabled={u.id === currentUser.id}
+                    style={{ width: 'auto' }}
+                  >
+                    <option value="viewer">Viewer</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </td>
+                <td className={styles.muted}>{new Date(u.created_at).toLocaleDateString()}</td>
+                <td style={{ display: 'flex', gap: 8 }}>
+                  {u.role !== 'admin' && (
+                    <button className="ghost" onClick={() => setExpanded(e => e === u.id ? null : u.id)}>
+                      {expanded === u.id ? 'Hide libraries' : 'Libraries'}
+                    </button>
+                  )}
+                  <button className="danger" onClick={() => remove(u.id)} disabled={u.id === currentUser.id}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+              {expanded === u.id && u.role !== 'admin' && (
+                <tr>
+                  <td colSpan={5}><UserLibraryAccess userId={u.id} /></td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function UserLibraryAccess({ userId }) {
+  const [libraries, setLibraries] = useState([])
+  const [selected, setSelected] = useState(new Set())
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setLoading(true)
+    Promise.all([api.get('/libraries'), api.get(`/users/${userId}/libraries`)])
+      .then(([libRes, accessRes]) => {
+        setLibraries(libRes.data)
+        setSelected(new Set(accessRes.data.library_ids))
+      })
+      .finally(() => setLoading(false))
+  }, [userId])
+
+  function toggle(libId) {
+    setSelected(s => {
+      const next = new Set(s)
+      next.has(libId) ? next.delete(libId) : next.add(libId)
+      return next
+    })
+  }
+
+  async function save() {
+    setSaving(true)
+    try {
+      await api.put(`/users/${userId}/libraries`, { library_ids: [...selected] })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <p className={styles.rowDesc}>Loading…</p>
+
+  return (
+    <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {libraries.length === 0 && <p className={styles.rowDesc}>No libraries configured yet.</p>}
+      {libraries.map(lib => (
+        <label key={lib.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+          <input type="checkbox" checked={selected.has(lib.id)} onChange={() => toggle(lib.id)} />
+          {lib.name} <span className={styles.nodeMeta}>({lib.type})</span>
+        </label>
+      ))}
+      <div>
+        <button className="primary" onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save access'}
+        </button>
+        {selected.size === 0 && libraries.length > 0 && (
+          <span className={styles.rowDesc} style={{ marginLeft: 8 }}>No restriction — sees all libraries</span>
+        )}
+      </div>
     </div>
   )
 }

@@ -27,10 +27,11 @@ export function useServerEvents(handlers) {
 
     function connect() {
       if (stopped) return
-      const token = localStorage.getItem('nexus_token')
-      if (!token) return   // not logged in — don't connect
+      // Not a hard security gate (nexus_user is just a UI marker) — the
+      // server still authenticates the connection via the httpOnly cookie.
+      if (!localStorage.getItem('nexus_user')) return   // not logged in — don't connect
 
-      es = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}`)
+      es = new EventSource('/api/v1/events', { withCredentials: true })
 
       es.onopen = () => {
         retryDelay = 1_000  // reset back-off on successful connection

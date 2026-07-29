@@ -1,6 +1,18 @@
 import { requireAdmin } from '../middleware/auth.js'
 import { getSetting } from '../services/settingsCache.js'
 import axios from 'axios'
+import { timingSafeEqual } from 'crypto'
+
+// Constant-time comparison — a plain !== leaks timing information an
+// attacker on the same network segment as the transcoder could use to guess
+// the shared secret byte-by-byte.
+function secretsMatch(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false
+  const a = Buffer.from(provided)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
 
 // Default priority per hw_accel type — used when the transcoder doesn't send one
 // and no settings row exists yet.
@@ -23,7 +35,7 @@ export default async function transcoderRoutes(app) {
   // Self-registration endpoint — no user auth, gated by the shared secret only.
   // Transcoder containers call this on startup so no manual admin step is needed.
   app.post('/register', async (request, reply) => {
-    if (request.headers['x-transcoder-secret'] !== process.env.TRANSCODER_SECRET) {
+    if (!secretsMatch(request.headers['x-transcoder-secret'], process.env.TRANSCODER_SECRET)) {
       return reply.code(401).send({ error: 'Unauthorized' })
     }
 

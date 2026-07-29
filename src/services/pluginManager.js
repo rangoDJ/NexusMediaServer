@@ -311,25 +311,38 @@ class PluginManager {
   // ── Enable / disable ──────────────────────────────────────────────────────
 
   async setEnabled(pluginId, enabled, db, log) {
-    const { rowCount } = await db.query(
-      'UPDATE plugins SET is_enabled=$1 WHERE id=$2',
+    const { rows, rowCount } = await db.query(
+      'UPDATE plugins SET is_enabled=$1 WHERE id=$2 RETURNING file_path',
       [enabled, pluginId]
     )
     if (!rowCount) throw new Error('Plugin not found')
 
-    if (!enabled && registry.plugins.has(pluginId)) {
-      await this.unloadPlugin(pluginId, log)
+    if (!enabled) {
+      if (registry.plugins.has(pluginId)) await this.unloadPlugin(pluginId, log)
+      return { restart_required: false }
     }
 
-    return { restart_required: enabled } // enabling requires reload/restart to re-import
+    // Re-enabling: actually re-import and register the plugin now, rather
+    // than just flipping the DB flag and leaving it out of the registry
+    // until the next full server restart.
+    const filePath = rows[0].file_path
+    if (!filePath || !existsSync(filePath)) {
+      log.warn(`[plugins] "${pluginId}" enabled but its file_path is unknown/missing — restart required to load it`)
+      return { restart_required: true }
+    }
+    await this.#loadOne(filePath, db, log)
+    return { restart_required: false }
   }
 
   // ── Reload (hot) ──────────────────────────────────────────────────────────
 
   async reload(pluginId, db, log) {
     const entry = registry.plugins.get(pluginId)
-    const filePath = entry?.filePath
-      ?? (await db.query('SELECT install_url FROM plugins WHERE id=$1', [pluginId])).rows[0]?.install_url
+    let filePath = entry?.filePath
+    if (!filePath) {
+      const { rows } = await db.query('SELECT file_path, install_url FROM plugins WHERE id=$1', [pluginId])
+      filePath = rows[0]?.file_path ?? rows[0]?.install_url
+    }
 
     if (!filePath) throw new Error(`Cannot reload "${pluginId}" — file path unknown`)
 
@@ -554,13 +567,13 @@ class PluginManager {
       INSERT INTO plugins(
         id, name, version, description, overview, author, category,
         homepage, min_server_version, permissions, settings_schema,
-        data_path, is_enabled, settings, has_tasks, error, loaded_at
+        data_path, is_enabled, settings, has_tasks, error, file_path, loaded_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
       ON CONFLICT(id) DO UPDATE SET
         name=$2, version=$3, description=$4, overview=$5, author=$6, category=$7,
         homepage=$8, min_server_version=$9, permissions=$10, settings_schema=$11,
-        data_path=$12, has_tasks=$15,
+        data_path=$12, has_tasks=$15, file_path=$17,
         error = CASE WHEN $16::text IS NOT NULL THEN $16 ELSE NULL END,
         loaded_at = now()
     `, [
@@ -580,6 +593,7 @@ class PluginManager {
       JSON.stringify(settings ?? {}),
       (manifest.tasks?.length ?? 0) > 0,
       error ?? null,
+      entryPath,
     ])
   }
 }

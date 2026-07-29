@@ -55,7 +55,7 @@ export const cleanupSessionsTask = {
         if (signal.aborted) return
         try {
           await axios.get(
-            `${session.node_url}/session/${session.remote_session_id}`,
+            `${session.node_url}/session/${session.remote_session_id}/status`,
             {
               headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
               timeout: 5_000,

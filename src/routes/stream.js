@@ -4,6 +4,7 @@ import { stat } from 'fs/promises'
 import { pickTranscoder, claimSession, releaseSession } from '../services/transcoderPool.js'
 import { callHook } from '../services/pluginLoader.js'
 import { requireAdmin } from '../middleware/auth.js'
+import { canAccessMediaItem, canAccessEpisode } from '../services/libraryAccess.js'
 
 // Containers whose raw bytes a typical browser can play without transcoding.
 // Used for the Content-Type on direct-play responses; the eligibility check
@@ -33,7 +34,7 @@ export default async function streamRoutes(app) {
     let { media_item_id, episode_id, codec = 'h264', resolution = '1080p', bitrate, variants = false, start_time_secs = 0 } = request.body
     const userId = request.user.sub
 
-    const filePath = await resolveFilePath(app.db, media_item_id, episode_id, reply)
+    const filePath = await resolveFilePath(app.db, media_item_id, episode_id, reply, request.user)
     if (!filePath) return
 
     const streamOverrides = await callHook('stream.start', { filePath, codec, resolution, bitrate }, app.log)
@@ -288,12 +289,18 @@ export default async function streamRoutes(app) {
 
     let row
     if (episode_id) {
+      if (!(await canAccessEpisode(app.db, request.user, episode_id))) {
+        return reply.code(404).send({ error: 'Episode not found' })
+      }
       const { rows } = await app.db.query(
         'SELECT file_path, container FROM episodes WHERE id=$1', [episode_id]
       )
       if (!rows.length) return reply.code(404).send({ error: 'Episode not found' })
       row = rows[0]
     } else if (media_item_id) {
+      if (!(await canAccessMediaItem(app.db, request.user, media_item_id))) {
+        return reply.code(404).send({ error: 'Media not found' })
+      }
       const { rows } = await app.db.query(
         'SELECT file_path, container FROM media_items WHERE id=$1', [media_item_id]
       )
@@ -592,13 +599,19 @@ export default async function streamRoutes(app) {
   })
 }
 
-async function resolveFilePath(db, mediaItemId, episodeId, reply) {
+async function resolveFilePath(db, mediaItemId, episodeId, reply, user) {
   if (episodeId) {
+    if (user && !(await canAccessEpisode(db, user, episodeId))) {
+      reply.code(404).send({ error: 'Episode not found' }); return null
+    }
     const { rows } = await db.query('SELECT file_path FROM episodes WHERE id=$1', [episodeId])
     if (!rows.length) { reply.code(404).send({ error: 'Episode not found' }); return null }
     return rows[0].file_path
   }
   if (mediaItemId) {
+    if (user && !(await canAccessMediaItem(db, user, mediaItemId))) {
+      reply.code(404).send({ error: 'Media not found' }); return null
+    }
     const { rows } = await db.query('SELECT file_path FROM media_items WHERE id=$1', [mediaItemId])
     if (!rows.length) { reply.code(404).send({ error: 'Media not found' }); return null }
     return rows[0].file_path

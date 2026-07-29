@@ -30,10 +30,10 @@ export default function TopNav() {
   }, [])
 
   function signOut() {
-    localStorage.removeItem('nexus_token')
-    localStorage.removeItem('nexus_refresh_token')
-    localStorage.removeItem('nexus_user')
-    navigate('/login')
+    api.post('/auth/logout').catch(() => {}).finally(() => {
+      localStorage.removeItem('nexus_user')
+      navigate('/login')
+    })
   }
 
   function onSearchSubmit(e) {

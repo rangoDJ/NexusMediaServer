@@ -15,8 +15,20 @@ import Layout from './components/Layout.jsx'
 import Collections from './pages/Collections.jsx'
 import CollectionDetail from './pages/CollectionDetail.jsx'
 
+// Auth tokens live in httpOnly cookies now (see api/client.js) — invisible
+// to JS by design. `nexus_user` is a non-sensitive UI-only marker set/cleared
+// alongside login/logout; it's a hint for client-side routing, not a security
+// boundary — every real request is still authorized server-side by the cookie.
 function useAuth() {
-  return !!localStorage.getItem('nexus_token')
+  return !!localStorage.getItem('nexus_user')
+}
+
+export function isAdmin() {
+  try {
+    return JSON.parse(localStorage.getItem('nexus_user') || '{}').role === 'admin'
+  } catch {
+    return false
+  }
 }
 
 function RequireAuth({ children }) {
@@ -28,6 +40,7 @@ function RequireAuth({ children }) {
 function RequireAdmin({ children }) {
   const authed = useAuth()
   if (!authed) return <Navigate to="/login" replace />
+  if (!isAdmin()) return <Navigate to="/" replace />
   return <Layout>{children}</Layout>
 }
 

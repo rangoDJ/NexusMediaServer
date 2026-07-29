@@ -62,7 +62,15 @@ export const analyzeIntrosTask = {
 
       for (const [season, eps] of bySeason) {
         if (signal.aborted) return
-        if (eps.length < 2) continue
+        if (eps.length < 2) {
+          // Can't fingerprint-compare intros with only one episode. Mark it
+          // analyzed anyway (a zero-length "no intro" sentinel) so this
+          // season stops matching the outer "needs analysis" query — without
+          // this, the whole series matches forever and every OTHER season
+          // gets re-fingerprinted on every run just because of this one.
+          await markNoIntro(db, eps)
+          continue
+        }
 
         log.info(`[tasks/intros] "${series.title}" S${season} — fingerprinting ${eps.length} episodes`)
 
@@ -89,11 +97,15 @@ export const analyzeIntrosTask = {
           }
         }
 
-        if (fingerprinted.length < 2) continue
+        if (fingerprinted.length < 2) {
+          await markNoIntro(db, eps)
+          continue
+        }
 
         const segments = detectIntros(fingerprinted)
         if (!segments.length) {
           log.info(`[tasks/intros] No common intro found in "${series.title}" S${season}`)
+          await markNoIntro(db, eps)
           continue
         }
 
@@ -118,12 +130,25 @@ export const analyzeIntrosTask = {
   },
 }
 
+// Records "analyzed, no intro segment" for episodes we're not going to
+// fingerprint-compare (or found no common intro for) — a zero-length
+// sentinel row so the outer query's NOT EXISTS stops matching them.
+async function markNoIntro(db, episodes) {
+  for (const ep of episodes) {
+    await db.query(`
+      INSERT INTO media_segments(episode_id, type, start_secs, end_secs)
+      VALUES($1, 'intro', 0, 0)
+      ON CONFLICT (episode_id, type) DO NOTHING
+    `, [ep.id])
+  }
+}
+
 async function pickNode(db) {
   const { rows } = await db.query(`
     SELECT id, url FROM transcoder_nodes
     WHERE is_enabled = true
       AND last_seen_at > now() - interval '2 minutes'
-    ORDER BY current_sessions ASC
+    ORDER BY active_sessions ASC
     LIMIT 1
   `)
   return rows[0] ?? null

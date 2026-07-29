@@ -45,6 +45,47 @@ export default async function usersRoutes(app) {
     return reply.code(204).send()
   })
 
+  // Admin: get a user's library access list. Empty array = unrestricted
+  // (sees every library) — see services/libraryAccess.js for the semantics.
+  app.get('/:id/libraries', { preHandler: requireAdmin }, async (request, reply) => {
+    const { rows: users } = await app.db.query('SELECT id FROM users WHERE id=$1', [request.params.id])
+    if (!users.length) return reply.code(404).send({ error: 'User not found' })
+    const { rows } = await app.db.query(
+      'SELECT library_id FROM user_library_access WHERE user_id=$1', [request.params.id]
+    )
+    return { library_ids: rows.map(r => r.library_id) }
+  })
+
+  // Admin: replace a user's library access list.
+  // Body: { library_ids: string[] } — [] clears all restrictions (unrestricted).
+  app.put('/:id/libraries', { preHandler: requireAdmin }, async (request, reply) => {
+    const { library_ids } = request.body ?? {}
+    if (!Array.isArray(library_ids) || !library_ids.every(id => typeof id === 'string')) {
+      return reply.code(400).send({ error: 'library_ids must be an array of strings' })
+    }
+    const { rows: users } = await app.db.query('SELECT id FROM users WHERE id=$1', [request.params.id])
+    if (!users.length) return reply.code(404).send({ error: 'User not found' })
+
+    const client = await app.db.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('DELETE FROM user_library_access WHERE user_id=$1', [request.params.id])
+      for (const libraryId of library_ids) {
+        await client.query(
+          'INSERT INTO user_library_access(user_id, library_id) VALUES($1,$2) ON CONFLICT DO NOTHING',
+          [request.params.id, libraryId]
+        )
+      }
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+    return { library_ids }
+  })
+
   // Self: change password
   app.put('/me/password', async (request, reply) => {
     const { current_password, new_password } = request.body

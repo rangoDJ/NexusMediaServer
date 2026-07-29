@@ -1,4 +1,5 @@
 import { join } from 'path'
+import { timingSafeEqual } from 'crypto'
 import Fastify from 'fastify'
 import axios from 'axios'
 import sessionRoutes from './routes/sessions.js'
@@ -25,9 +26,22 @@ const app = Fastify({
   }),
 })
 
+if (!process.env.TRANSCODER_SECRET || process.env.TRANSCODER_SECRET.length < 32) {
+  app.log.fatal('TRANSCODER_SECRET must be at least 32 characters. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"')
+  process.exit(1)
+}
+
+function secretsMatch(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false
+  const a = Buffer.from(provided)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
+
 // All requests must carry the shared secret
 app.addHook('onRequest', async (request, reply) => {
-  if (request.headers['x-transcoder-secret'] !== process.env.TRANSCODER_SECRET) {
+  if (!secretsMatch(request.headers['x-transcoder-secret'], process.env.TRANSCODER_SECRET)) {
     return reply.code(401).send({ error: 'Unauthorized' })
   }
 })
