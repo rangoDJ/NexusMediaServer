@@ -1,0 +1,47 @@
+/* Indeterminate top-edge progress bar for route chunk loading.
+   Uses the cyan → magenta accent pair so the loading state already speaks the
+   new palette. Held invisible for 150ms so fast local loads never flash. */
+.bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 9999;
+  overflow: hidden;
+  background: transparent;
+  opacity: 0;
+  animation: reveal var(--dur) var(--ease-out) 150ms forwards;
+}
+
+.bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--cyan),
+    var(--magenta),
+    transparent);
+  transform: translateX(-100%);
+  animation: sweep 1.1s var(--ease-out) 150ms infinite;
+}
+
+@keyframes reveal {
+  to { opacity: 1; }
+}
+
+@keyframes sweep {
+  to { transform: translateX(100%); }
+}
+
+/* With motion reduced, show a static tinted bar rather than a travelling one —
+   the state is still communicated, nothing moves across the screen. */
+@media (prefers-reduced-motion: reduce) {
+  .bar { opacity: 1; background: var(--surface-2); }
+  .bar::after {
+    background: var(--cyan);
+    transform: none;
+    opacity: 0.5;
+  }
+}

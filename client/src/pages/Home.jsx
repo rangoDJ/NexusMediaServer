@@ -3,6 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import MediaCard from '../components/MediaCard.jsx'
 import styles from './Home.module.css'
+// NextUpCard and the skeleton reuse MediaCard's card anatomy (poster frame,
+// placeholder, progress bar, title/subtitle) rather than restating it — those
+// classes used to be duplicated verbatim in Home.module.css.
+import card from '../components/MediaCard.module.css'
 
 const POPULAR_GENRES = ['Action', 'Comedy', 'Drama', 'Sci-Fi', 'Horror', 'Thriller', 'Animation', 'Documentary']
 
@@ -168,24 +172,24 @@ function NextUpCard({ item }) {
 
   return (
     <button
-      className={styles.card}
+      className={`${card.card} ${styles.cardSlot}`}
       onClick={() => navigate(`/movie/${item.series_id}`)}
       title={`${item.series_title} · ${label}`}
     >
-      <div className={styles.poster}>
+      <div className={card.poster}>
         {item.poster_url
           ? <img src={item.poster_url} alt={item.series_title} loading="lazy" />
-          : <div className={styles.posterPlaceholder}>{item.series_title[0]?.toUpperCase()}</div>
+          : <div className={card.posterPlaceholder}>{item.series_title[0]?.toUpperCase()}</div>
         }
         {pct > 0 && (
-          <div className={styles.progressBar}>
-            <div className={styles.progressFill} style={{ width: `${pct}%` }} />
+          <div className={card.progressBar}>
+            <div className={card.progressFill} style={{ width: `${pct}%` }} />
           </div>
         )}
         <div className={styles.seriesBadge}>{label}</div>
       </div>
-      <p className={styles.cardTitle}>{item.series_title}</p>
-      <p className={styles.cardSub}>{item.episode_title ?? label}</p>
+      <p className={card.cardTitle}>{item.series_title}</p>
+      <p className={card.cardSub}>{item.episode_title ?? label}</p>
     </button>
   )
 }
@@ -199,8 +203,8 @@ function SkeletonHome() {
           <div className={`${styles.sectionTitle} ${styles.skeleton}`} style={{ width: 220, height: 22 }} />
           <div className={styles.row}>
             {Array.from({ length: 8 }).map((_, j) => (
-              <div key={j} className={`${styles.card} ${styles.skelCard}`}>
-                <div className={`${styles.poster} ${styles.skeleton}`} />
+              <div key={j} className={`${styles.cardSlot} ${styles.skelCard}`}>
+                <div className={`${card.poster} ${styles.skeleton}`} />
                 <div className={`${styles.skeleton} ${styles.skelLine}`} style={{ width: 120 }} />
                 <div className={`${styles.skeleton} ${styles.skelLine}`} style={{ width: 50, marginTop: 4 }} />
               </div>

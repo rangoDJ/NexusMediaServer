@@ -1,9 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
-import Player from './Player.jsx'
 import styles from './MovieDetail.module.css'
+
+// Player drags in hls.js, comfortably the heaviest dependency in the app.
+// It only ever mounts once the user actually starts playback, so browsing to a
+// detail page shouldn't pay for a video engine. Splitting it here keeps this
+// route light and defers hls.js to the moment Play is pressed.
+const Player = lazy(() => import('./Player.jsx'))
 
 function fmt(secs) {
   if (!secs) return null
@@ -93,13 +98,15 @@ export default function MovieDetail() {
           <span className={styles.playerTitle}>{playing.title}</span>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
-          <Player
-            key={playing.episodeId ?? playing.mediaItemId}
-            mediaItemId={playing.mediaItemId}
-            episodeId={playing.episodeId}
-            title={playing.title}
-            onEnded={advanceToNextEpisode}
-          />
+          <Suspense fallback={<div className={styles.playerLoading}>Loading player…</div>}>
+            <Player
+              key={playing.episodeId ?? playing.mediaItemId}
+              mediaItemId={playing.mediaItemId}
+              episodeId={playing.episodeId}
+              title={playing.title}
+              onEnded={advanceToNextEpisode}
+            />
+          </Suspense>
         </div>
       </div>
     )

@@ -1,0 +1,260 @@
+/* ============================================================================
+   NEXUS — DESIGN TOKENS
+   ----------------------------------------------------------------------------
+   The single source of truth for color, type, space, shape, depth and motion.
+   Nothing in this file targets a selector other than :root — it only declares
+   custom properties. Components read tokens; they never hardcode values.
+
+   PALETTE CONCEPT — "film emulsion"
+   Color film is three stacked dye layers: cyan, magenta, yellow. Those are the
+   three accents, laid over a blue-violet ink ground descended from the app's
+   original #0f0f13 so it still reads as Nexus. Each accent owns a role and
+   they never compete:
+       cyan     navigation, focus, selection, links
+       magenta  playback, progress, resume
+       amber    filters, favorites, attention
+
+   AMBIENT COLOR
+   The real accent is --art: a per-item color extracted from the artwork
+   (populated in phase 02, consumed by the card in phase 03). It falls back to
+   cyan wherever no artwork color exists, so it is always safe to reference.
+
+   THEMING — read before changing
+   :root is DARK on purpose. The app has always been dark and no page has been
+   audited for a light ground yet, so keying the default off
+   `prefers-color-scheme` here would silently flip the whole app to an untested
+   theme for anyone whose OS is set to light. Light is therefore opt-in via
+   :root[data-theme="light"] until phase 06, which audits every page and then
+   promotes light to a real OS-preference default.
+
+   LEGACY ALIASES
+   The bottom block maps the old variable names onto the new scale. That is what
+   lets 15 existing CSS modules pick up this palette without being touched. They
+   get retired page by page as later phases rewrite each module.
+   ========================================================================== */
+
+:root {
+  /* ── Ground ──────────────────────────────────────────────────────────── */
+  --surface-0: #0A0912;   /* page background                                */
+  --surface-1: #121020;   /* cards, panels, nav                             */
+  --surface-2: #1B1830;   /* inputs, raised wells                           */
+  --surface-3: #241F3E;   /* hover / active fills                           */
+
+  --line:      #2C2648;   /* borders, dividers                              */
+  --line-soft: #211C3A;   /* hairlines inside a panel                       */
+
+  /* ── Text ────────────────────────────────────────────────────────────── */
+  --text:       #EDEAF7;
+  --text-dim:   #9B94BE;  /* secondary copy, metadata                       */
+  --text-faint: #6B6490;  /* placeholders, disabled                         */
+
+  /* ── Accents ─────────────────────────────────────────────────────────── */
+  --cyan:     #3DD9D6;
+  --cyan-hi:  #6FE8E5;    /* hover                                          */
+  --cyan-lo:  #1B6E6D;    /* subtle fills, tinted borders                   */
+
+  --magenta:    #F0409C;
+  --magenta-hi: #FF6BB5;
+  --magenta-lo: #7A2050;
+
+  --amber:    #FFB627;
+  --amber-hi: #FFC85C;
+  --amber-lo: #7A5410;
+
+  /* ── Semantic ────────────────────────────────────────────────────────── */
+  --success: #34D399;
+  --warning: var(--amber);
+  --danger:  #FF6B6B;
+  --info:    var(--cyan);
+
+  /* ── Ambient (per-item artwork color) ────────────────────────────────── */
+  /* Components set --art locally; this is the library-wide fallback. */
+  --art: var(--cyan);
+  /* Multiplier for ambient glow intensity — dialed back on light grounds
+     where a wide colored shadow reads as smudge rather than light. */
+  --glow-strength: 0.30;
+
+  /* ── Type ────────────────────────────────────────────────────────────── */
+  /* Deliberately not Inter — it is the current face and the main reason the
+     UI reads as generic. system-ui resolves to Segoe UI / SF Pro / Roboto,
+     ships nothing, and renders natively everywhere. */
+  --font-display: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-ui:      system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Reading face for prose only — synopses, overviews. Applied selectively
+     on detail pages in phase 05, never globally. */
+  --font-read:    ui-serif, Georgia, "Times New Roman", serif;
+  /* Media apps are mostly numbers. Runtimes, codecs, bitrates and timestamps
+     get their own voice, and tabular figures so columns align. */
+  --font-mono:    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs:   0.75rem;
+  --text-sm:   0.8125rem;
+  --text-base: 0.875rem;   /* app baseline — matches the current 14px */
+  --text-md:   1rem;
+  --text-lg:   1.125rem;
+  --text-xl:   clamp(1.25rem, 2vw,  1.5rem);
+  --text-2xl:  clamp(1.5rem,  3vw,  2rem);
+  --text-3xl:  clamp(2rem,    5vw,  3rem);
+  --text-4xl:  clamp(2.5rem,  7vw,  4.5rem);
+
+  --leading-tight: 1.1;
+  --leading-snug:  1.35;
+  --leading-base:  1.5;
+  --leading-loose: 1.65;
+
+  --tracking-tight: -0.025em;  /* display sizes */
+  --tracking-base:   0;
+  --tracking-wide:   0.06em;
+  --tracking-caps:   0.14em;   /* uppercase mono labels */
+
+  /* ── Space — 4px base ────────────────────────────────────────────────── */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4.5rem;
+  --space-9: 7rem;
+
+  /* ── Shape ───────────────────────────────────────────────────────────── */
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   14px;
+  --radius-xl:   22px;
+  --radius-full: 999px;
+
+  /* ── Depth ───────────────────────────────────────────────────────────── */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-2: 0 2px 8px -2px rgba(0, 0, 0, 0.50);
+  --shadow-3: 0 8px 24px -6px rgba(0, 0, 0, 0.60);
+  --shadow-4: 0 20px 48px -12px rgba(0, 0, 0, 0.70);
+
+  /* ── Motion ──────────────────────────────────────────────────────────── */
+  --dur-fast: 120ms;
+  --dur:      200ms;
+  --dur-slow: 320ms;
+  --ease-out:    cubic-bezier(0.2, 0.8, 0.3, 1);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  --rail-w:      64px;    /* collapsed icon rail (phase 01)                 */
+  --rail-w-open: 240px;   /* expanded on hover                             */
+  --topbar-h:    56px;
+  --content-max: 1800px;
+
+  /* ── Focus ───────────────────────────────────────────────────────────── */
+  --focus-ring:   2px solid var(--cyan);
+  --focus-offset: 3px;
+}
+
+/* ============================================================================
+   LIGHT THEME — opt-in until phase 06
+   Not a naive inversion. The accents are darkened until they hold their own
+   against white (raw #3DD9D6 on white is ~1.6:1 and unreadable), and the
+   ground keeps a violet bias so it reads as the same product in a bright room.
+   ========================================================================== */
+:root[data-theme="light"] {
+  --surface-0: #F7F5FB;
+  --surface-1: #FFFFFF;
+  --surface-2: #EFEBF7;
+  --surface-3: #E4DEF2;
+
+  --line:      #DED7EC;
+  --line-soft: #EAE4F5;
+
+  --text:       #16132A;
+  --text-dim:   #5D5580;
+  --text-faint: #857CA8;
+
+  --cyan:     #0E8F8C;
+  --cyan-hi:  #0B7371;
+  --cyan-lo:  #C7EFEE;
+
+  --magenta:    #C81E75;
+  --magenta-hi: #A5165F;
+  --magenta-lo: #FBD8E9;
+
+  --amber:    #9C6100;
+  --amber-hi: #7D4E00;
+  --amber-lo: #FCEBC8;
+
+  --success: #047857;
+  --danger:  #C42B2B;
+
+  --glow-strength: 0.10;
+
+  --shadow-1: 0 1px 2px rgba(28, 20, 60, 0.06);
+  --shadow-2: 0 2px 8px -2px rgba(28, 20, 60, 0.10);
+  --shadow-3: 0 8px 24px -6px rgba(28, 20, 60, 0.14);
+  --shadow-4: 0 20px 48px -12px rgba(28, 20, 60, 0.18);
+}
+
+/* Explicit dark selector so the viewer's toggle can override a light default
+   in both directions once phase 06 wires prefers-color-scheme. */
+:root[data-theme="dark"] {
+  --surface-0: #0A0912;
+  --surface-1: #121020;
+  --surface-2: #1B1830;
+  --surface-3: #241F3E;
+
+  --line:      #2C2648;
+  --line-soft: #211C3A;
+
+  --text:       #EDEAF7;
+  --text-dim:   #9B94BE;
+  --text-faint: #6B6490;
+
+  --cyan:     #3DD9D6;
+  --cyan-hi:  #6FE8E5;
+  --cyan-lo:  #1B6E6D;
+
+  --magenta:    #F0409C;
+  --magenta-hi: #FF6BB5;
+  --magenta-lo: #7A2050;
+
+  --amber:    #FFB627;
+  --amber-hi: #FFC85C;
+  --amber-lo: #7A5410;
+
+  --success: #34D399;
+  --danger:  #FF6B6B;
+
+  --glow-strength: 0.30;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-2: 0 2px 8px -2px rgba(0, 0, 0, 0.50);
+  --shadow-3: 0 8px 24px -6px rgba(0, 0, 0, 0.60);
+  --shadow-4: 0 20px 48px -12px rgba(0, 0, 0, 0.70);
+}
+
+/* ============================================================================
+   LEGACY ALIASES
+   ----------------------------------------------------------------------------
+   Every variable the pre-overhaul modules reference, remapped onto the scale
+   above. This is what lets the new palette reach all 15 modules without
+   editing them. Retire an alias only once no module references it —
+       grep -rn -- "--accent" client/src
+   Three of these (--text-primary, --error, --border-hover) were never defined
+   at all; Libraries.module.css referenced them with hardcoded fallbacks
+   (#f1f1f1, #ef4444, #444) that bypassed theming entirely. Defining them here
+   pulls that page back onto the palette.
+   ========================================================================== */
+:root {
+  --bg:           var(--surface-0);
+  --surface:      var(--surface-1);
+  --surface2:     var(--surface-2);
+  --border:       var(--line);
+  --border-hover: var(--surface-3);
+
+  --text-muted:   var(--text-dim);
+  --text-primary: var(--text);
+
+  --accent:       var(--cyan);
+  --accent-hover: var(--cyan-hi);
+  --error:        var(--danger);
+
+  --radius: var(--radius-md);
+  --font:   var(--font-ui);
+}

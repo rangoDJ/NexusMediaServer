@@ -1,19 +1,29 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import axios from 'axios'
-import Settings from './pages/Settings.jsx'
-import Login from './pages/Login.jsx'
-import Register from './pages/Register.jsx'
-import Setup from './pages/Setup.jsx'
-import Home from './pages/Home.jsx'
-import MovieDetail from './pages/MovieDetail.jsx'
-import Search from './pages/Search.jsx'
-import Person from './pages/Person.jsx'
-import LibraryDetail from './pages/LibraryDetail.jsx'
-import Libraries from './pages/Libraries.jsx'
 import Layout from './components/Layout.jsx'
-import Collections from './pages/Collections.jsx'
-import CollectionDetail from './pages/CollectionDetail.jsx'
+import RouteFallback from './components/RouteFallback.jsx'
+
+// Home and Login stay eager — they are the two first-paint destinations, and
+// code-splitting them would only trade a smaller bundle for a spinner on the
+// very first screen.
+import Home from './pages/Home.jsx'
+import Login from './pages/Login.jsx'
+
+// Everything else loads on demand. The big wins:
+//   MovieDetail → pulls in Player → pulls in hls.js (the largest dependency)
+//   Settings    → the biggest page in the app by a wide margin
+//   Setup       → runs exactly once in a server's lifetime
+const MovieDetail     = lazy(() => import('./pages/MovieDetail.jsx'))
+const Settings        = lazy(() => import('./pages/Settings.jsx'))
+const Setup           = lazy(() => import('./pages/Setup.jsx'))
+const Register        = lazy(() => import('./pages/Register.jsx'))
+const Search          = lazy(() => import('./pages/Search.jsx'))
+const Person          = lazy(() => import('./pages/Person.jsx'))
+const Libraries       = lazy(() => import('./pages/Libraries.jsx'))
+const LibraryDetail   = lazy(() => import('./pages/LibraryDetail.jsx'))
+const Collections     = lazy(() => import('./pages/Collections.jsx'))
+const CollectionDetail = lazy(() => import('./pages/CollectionDetail.jsx'))
 
 // Auth tokens live in httpOnly cookies now (see api/client.js) — invisible
 // to JS by design. `nexus_user` is a non-sensitive UI-only marker set/cleared
@@ -59,30 +69,34 @@ export default function App() {
 
   if (setupRequired) {
     return (
-      <Routes>
-        <Route
-          path="/setup"
-          element={<Setup onComplete={() => setSetupRequired(false)} />}
-        />
-        <Route path="*" element={<Navigate to="/setup" replace />} />
-      </Routes>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route
+            path="/setup"
+            element={<Setup onComplete={() => setSetupRequired(false)} />}
+          />
+          <Route path="*" element={<Navigate to="/setup" replace />} />
+        </Routes>
+      </Suspense>
     )
   }
 
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/" element={<RequireAuth><Home /></RequireAuth>} />
-      <Route path="/movie/:id" element={<RequireAuth><MovieDetail /></RequireAuth>} />
-      <Route path="/libraries" element={<RequireAuth><Libraries /></RequireAuth>} />
-      <Route path="/library/:id" element={<RequireAuth><LibraryDetail /></RequireAuth>} />
-      <Route path="/search" element={<RequireAuth><Search /></RequireAuth>} />
-      <Route path="/person/:tmdbId" element={<RequireAuth><Person /></RequireAuth>} />
-      <Route path="/collections"    element={<RequireAuth><Collections /></RequireAuth>} />
-      <Route path="/collections/:id" element={<RequireAuth><CollectionDetail /></RequireAuth>} />
-      <Route path="/settings" element={<RequireAdmin><Settings /></RequireAdmin>} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <Suspense fallback={<RouteFallback />}>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/" element={<RequireAuth><Home /></RequireAuth>} />
+        <Route path="/movie/:id" element={<RequireAuth><MovieDetail /></RequireAuth>} />
+        <Route path="/libraries" element={<RequireAuth><Libraries /></RequireAuth>} />
+        <Route path="/library/:id" element={<RequireAuth><LibraryDetail /></RequireAuth>} />
+        <Route path="/search" element={<RequireAuth><Search /></RequireAuth>} />
+        <Route path="/person/:tmdbId" element={<RequireAuth><Person /></RequireAuth>} />
+        <Route path="/collections"    element={<RequireAuth><Collections /></RequireAuth>} />
+        <Route path="/collections/:id" element={<RequireAuth><CollectionDetail /></RequireAuth>} />
+        <Route path="/settings" element={<RequireAdmin><Settings /></RequireAdmin>} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   )
 }

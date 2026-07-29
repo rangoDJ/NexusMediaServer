@@ -48,69 +48,11 @@
   .cardSlot { flex-basis: 120px; width: 120px; min-width: 120px; max-width: 120px; }
 }
 
-/* ── Media card ──────────────────────────────────────────────────────────── */
-.card {
-  flex: 0 0 auto;
-  width: 150px;
-  background: none;
-  padding: 0;
-  border-radius: 0;
-  text-align: left;
-  border: none;
-  cursor: pointer;
-  transition: transform 0.15s;
-}
-
-.card:hover { transform: scale(1.04); }
-.card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-  border-radius: var(--radius);
-}
-
-.poster {
-  position: relative;
-  width: 150px;
-  height: 225px;
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: var(--surface2);
-  margin-bottom: 8px;
-}
-
-.poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.posterPlaceholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 52px;
-  font-weight: 700;
-  color: var(--text-muted);
-}
-
-.progressBar {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.progressFill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-}
-
+/* ── Next Up badge ───────────────────────────────────────────────────────── */
+/* The only card element unique to this page — MediaCard's own .typeBadge sits
+   top-left and reads a media type, this sits top-right and reads SxxExx.
+   Every other card class (.card, .poster, .progressBar, .cardTitle …) now
+   comes from MediaCard.module.css instead of being restated here. */
 .seriesBadge {
   position: absolute;
   top: 8px;
@@ -123,22 +65,6 @@
   padding: 2px 6px;
   border-radius: 4px;
   border: 1px solid var(--border);
-}
-
-.cardTitle {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 150px;
-}
-
-.cardSub {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 2px;
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────────── */
@@ -178,9 +104,8 @@
 }
 
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
+/* Card sizing is driven entirely by .cardSlot (see above) — the card itself is
+   intrinsically 100% wide, so narrowing the slot narrows everything inside it. */
 @media (max-width: 720px) {
   .main { padding: 16px 12px 60px; }
-  .card, .poster { width: 120px; }
-  .poster { height: 180px; }
-  .cardTitle { max-width: 120px; }
 }

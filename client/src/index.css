@@ -1,64 +1,22 @@
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ============================================================================
+   NEXUS — GLOBAL ENTRY
+   ----------------------------------------------------------------------------
+   Load order matters: tokens declare the custom properties that primitives and
+   every CSS module read, so it has to come first.
+   ========================================================================== */
+@import './styles/tokens.css';
+@import './styles/primitives.css';
 
-:root {
-  --bg: #0f0f13;
-  --surface: #1a1a23;
-  --surface2: #22222e;
-  --border: #2e2e3e;
-  --text: #e8e8f0;
-  --text-muted: #8888a8;
-  --accent: #7c6af7;
-  --accent-hover: #9585ff;
-  --danger: #e05555;
-  --success: #4caf7d;
-  --radius: 8px;
-  --font: 'Inter', system-ui, sans-serif;
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html, body, #root { height: 100%; }
-body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.5; }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { color: var(--accent-hover); }
+img { max-width: 100%; }
 
-input, select, textarea {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font: inherit;
-  padding: 8px 12px;
-  width: 100%;
-  transition: border-color 0.15s;
-}
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-/* Base reset applied to all buttons EXCEPT Vidstack's internal controls.
- * Vidstack renders its player buttons in the light DOM (not shadow DOM), so
- * a bare `button { padding: … }` rule bleeds into the player and corrupts
- * the controls bar layout, hiding the seek bar. The :where(:not(media-player *))
- * guard keeps these defaults away from anything inside <media-player>. */
-button:where(:not(media-player *)) {
-  cursor: pointer;
-  font: inherit;
-  border: none;
-  border-radius: var(--radius);
-  padding: 8px 16px;
-  transition: background 0.15s;
-}
-button.primary {
-  background: var(--accent);
-  color: #fff;
-}
-button.primary:hover { background: var(--accent-hover); }
-button.ghost {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-button.ghost:hover { background: var(--surface2); }
-button.danger { background: var(--danger); color: #fff; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Base element and component styling lives in styles/primitives.css.
+   Page-specific styling lives in that page's .module.css. */

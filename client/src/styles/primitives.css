@@ -1,0 +1,169 @@
+/* ============================================================================
+   NEXUS — PRIMITIVES
+   ----------------------------------------------------------------------------
+   Base element styling and the handful of global classes shared across pages.
+   Everything here reads from tokens.css. Page-specific styling stays in that
+   page's CSS module.
+
+   Kept intentionally low-specificity (bare element selectors, single classes)
+   so any module class overrides it without !important.
+   ========================================================================== */
+
+/* ── Document ────────────────────────────────────────────────────────────── */
+body {
+  background: var(--surface-0);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Links ───────────────────────────────────────────────────────────────── */
+a {
+  color: var(--cyan);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+a:hover { color: var(--cyan-hi); }
+
+/* ── Headings ────────────────────────────────────────────────────────────── */
+/* Display face with tight tracking — the size comes from the page, not here. */
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  text-wrap: balance;
+}
+
+/* ── Numeric data ────────────────────────────────────────────────────────── */
+/* Runtimes, bitrates, timestamps, counts — anything that lines up in a column
+   or ticks upward in place. Tabular figures stop the layout jittering. */
+.tabular { font-variant-numeric: tabular-nums; }
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-base);
+}
+
+/* ── Form controls ───────────────────────────────────────────────────────── */
+input, select, textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  padding: var(--space-2) var(--space-3);
+  width: 100%;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow  var(--dur-fast) var(--ease-out);
+}
+input::placeholder, textarea::placeholder { color: var(--text-faint); }
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 22%, transparent);
+}
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input[type="checkbox"], input[type="radio"] {
+  width: auto;
+  accent-color: var(--cyan);
+}
+input[type="range"] { width: auto; padding: 0; accent-color: var(--magenta); }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+/* NOTE: this rule intentionally styles the bare `button` element. ~109 buttons
+   across the app rely on inheriting this padding and radius, so narrowing it to
+   an explicit .btn class is a later-phase migration, not a phase-00 change.
+   Any button that sets its own box (e.g. a fixed-size icon button) must declare
+   `padding: 0` — see .controlBtn in Player.module.css. */
+button {
+  cursor: pointer;
+  font: inherit;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  color: var(--text);
+  background: transparent;
+  transition: background   var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color        var(--dur-fast) var(--ease-out),
+              opacity      var(--dur-fast) var(--ease-out);
+}
+
+button.primary {
+  background: var(--cyan);
+  color: #06201F;          /* dark ink on a bright accent, not pure white */
+  font-weight: 600;
+}
+button.primary:hover { background: var(--cyan-hi); }
+
+button.ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+button.ghost:hover {
+  background: var(--surface-2);
+  border-color: var(--surface-3);
+}
+
+button.danger {
+  background: var(--danger);
+  color: #2A0A0A;
+  font-weight: 600;
+}
+button.danger:hover { filter: brightness(1.08); }
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Focus ───────────────────────────────────────────────────────────────── */
+/* Keyboard-only. Pointer users never see a ring; keyboard users always do. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-sm);
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+::selection {
+  background: color-mix(in srgb, var(--cyan) 32%, transparent);
+  color: var(--text);
+}
+
+/* ── Motion preference ───────────────────────────────────────────────────── */
+/* Global backstop. Individual components still opt out of transform-heavy
+   effects themselves where simply shortening the duration isn't enough. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

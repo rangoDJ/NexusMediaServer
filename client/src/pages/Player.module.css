@@ -426,6 +426,10 @@
   justify-content: center;
   width: 32px;
   height: 32px;
+  /* Required: the global `button` rule applies padding, which would collapse
+     this button's 32px content box to zero and clip the glyph. Fixed-size
+     icon buttons must always zero it out. */
+  padding: 0;
   background: none;
   border: none;
   color: #fff;
