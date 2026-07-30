@@ -39,6 +39,7 @@ import { cleanupSessionsTask } from './tasks/cleanupSessions.js'
 import { refreshMetadataTask } from './tasks/refreshMetadata.js'
 import { generateTrickplayTask } from './tasks/generateTrickplay.js'
 import { analyzeIntrosTask } from './tasks/analyzeIntros.js'
+import { extractColorsTask } from './tasks/extractColors.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIST = resolve(__dirname, '../client/dist')
@@ -152,6 +153,7 @@ scheduler.register(cleanupSessionsTask)
 scheduler.register(refreshMetadataTask)
 scheduler.register(generateTrickplayTask)
 scheduler.register(analyzeIntrosTask)
+scheduler.register(extractColorsTask)
 app.decorate('scheduler', scheduler)
 
 // ── API routes (register before static so /api/* is never served as a file) ──

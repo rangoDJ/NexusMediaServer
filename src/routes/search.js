@@ -20,7 +20,7 @@ export default async function searchRoutes(app) {
     const mediaParams = [pattern]
     const mediaLibCond = await libraryFilterCondition(app.db, request.user, mediaParams, 'library_id')
     const mediaQ = await app.db.query(
-      `SELECT id, type, title, year, poster_url, rating, duration_secs, genres
+      `SELECT id, type, title, year, poster_url, rating, duration_secs, genres, dominant_color
        FROM media_items
        WHERE title ILIKE $1 ESCAPE '!'
          ${mediaLibCond ? `AND ${mediaLibCond}` : ''}
