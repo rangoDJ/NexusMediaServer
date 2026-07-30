@@ -11,6 +11,7 @@ import { spawn } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { createPool } from './db/pool.js'
+import { helmetOptions } from './config/security.js'
 import authRoutes from './routes/auth.js'
 import libraryRoutes from './routes/libraries.js'
 import mediaRoutes from './routes/media.js'
@@ -88,27 +89,13 @@ if (process.env.NODE_ENV === 'development') {
 await app.register(fcookie)
 
 // ── Security headers / CSP ─────────────────────────────────────────────────────
-// Auth is now cookie-based (httpOnly), so a CSP is the main remaining backstop
-// against token theft via a future XSS. connect-src/media-src 'self' covers the
-// SPA's own API + HLS playback; no external origins are ever loaded.
-await app.register(helmet, {
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc:  ["'self'"],
-      styleSrc:   ["'self'", "'unsafe-inline'"], // CSS-in-JS / inline styles used by the client build
-      imgSrc:     ["'self'", 'data:', 'blob:'],
-      mediaSrc:   ["'self'", 'blob:'],
-      connectSrc: ["'self'"],
-      workerSrc:  ["'self'", 'blob:'], // hls.js worker mode
-      objectSrc:  ["'none'"],
-      frameAncestors: ["'none'"],
-    },
-  },
-  // Cross-origin isolation headers break same-origin <img>/<video> loads from
-  // the transcoder-proxied endpoints in some setups; not needed for this app.
-  crossOriginEmbedderPolicy: false,
-})
+// Auth is cookie-based (httpOnly), so a CSP is the main remaining backstop
+// against token theft via a future XSS.
+//
+// Configured in config/security.js and asserted in test/securityHeaders.test.js
+// — helmet's defaults assume HTTPS and will otherwise add
+// upgrade-insecure-requests, which blanks the UI on a plain-HTTP LAN install.
+await app.register(helmet, helmetOptions())
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   console.error('FATAL: JWT_SECRET must be at least 32 characters. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"')
