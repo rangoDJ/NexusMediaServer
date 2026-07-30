@@ -1,0 +1,113 @@
+/* ============================================================================
+   SCROLL ROW
+   ========================================================================== */
+.row { margin-bottom: var(--space-7); }
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+}
+
+/* Names what the row is rather than repeating the title — "recently added",
+   "in progress". Mono keeps it clearly subordinate to the heading. */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.viewport { position: relative; }
+
+/* ── Scroller ────────────────────────────────────────────────────────────── */
+.scroller {
+  display: flex;
+  gap: var(--space-3);
+  overflow-x: auto;
+  /* Cards lift on hover and cast a glow; without room the transform clips
+     against the scroll box. */
+  padding: var(--space-2) 0 var(--space-5);
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.scroller::-webkit-scrollbar { display: none; }
+.scroller > * { scroll-snap-align: start; }
+
+/* ── Edge fades ──────────────────────────────────────────────────────────── */
+.fade {
+  position: absolute;
+  top: 0;
+  bottom: var(--space-5);
+  width: 56px;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity var(--dur) var(--ease-out);
+}
+.fadeStart {
+  left: 0;
+  background: linear-gradient(to right, var(--surface-0), transparent);
+}
+.fadeEnd {
+  right: 0;
+  background: linear-gradient(to left, var(--surface-0), transparent);
+}
+.fadeOff { opacity: 0; }
+
+/* ── Arrows ──────────────────────────────────────────────────────────────── */
+.arrow {
+  position: absolute;
+  top: calc(50% - var(--space-3));
+  transform: translateY(-50%);
+  z-index: 3;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-2), inset 0 0 0 1px var(--line);
+  color: var(--text);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+.arrowStart { left: calc(var(--space-2) * -1); }
+.arrowEnd   { right: calc(var(--space-2) * -1); }
+
+.viewport:hover .arrow { opacity: 1; }
+.arrow:hover { background: var(--surface-2); }
+
+/* At an extreme the arrow is not merely hidden but unclickable, so a stale
+   pointer can't scroll past the end. */
+.arrowOff,
+.viewport:hover .arrowOff {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Arrows assume a pointer. On touch the row is swiped directly, and the fades
+   already signal that more content exists. */
+@media (hover: none) {
+  .arrow { display: none; }
+}
+
+@media (max-width: 720px) {
+  .row { margin-bottom: var(--space-6); }
+  .fade { width: 28px; }
+}

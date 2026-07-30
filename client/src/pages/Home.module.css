@@ -1,101 +1,99 @@
-/* ── Main content ────────────────────────────────────────────────────────── */
+/* ============================================================================
+   HOME
+   Card anatomy lives in components/MediaCard.module.css; row mechanics live in
+   components/Row.module.css. This file only sizes slots and lays out the page.
+   ========================================================================== */
 .main {
-  flex: 1;
-  padding: 24px 32px 60px;
-  max-width: 1800px;
+  padding: var(--space-5) var(--space-6) var(--space-8);
+  max-width: var(--content-max);
   margin: 0 auto;
   width: 100%;
 }
 
-/* ── Row section ─────────────────────────────────────────────────────────── */
-.section {
-  margin-bottom: 36px;
+/* ── Card slots ──────────────────────────────────────────────────────────── */
+/* Cards are intrinsically 100% wide so they also work in a grid; the slot is
+   what fixes their size inside a scroll row. Explicit flex-basis alongside
+   width so every card is pixel-identical regardless of flex negotiation. */
+.slot {
+  flex: 0 0 154px;
+  width: 154px;
 }
 
-.sectionTitle {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 14px;
+.slotWide {
+  flex: 0 0 268px;
+  width: 268px;
 }
 
-.row {
+/* ── Genre chips ─────────────────────────────────────────────────────────── */
+.chips {
   display: flex;
-  gap: 12px;
+  gap: var(--space-2);
   overflow-x: auto;
-  padding-bottom: 10px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-6);
+  scrollbar-width: none;
 }
+.chips::-webkit-scrollbar { display: none; }
 
-.row::-webkit-scrollbar { height: 4px; }
-.row::-webkit-scrollbar-track { background: transparent; }
-.row::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-
-/* Fixed-width slot for the shared MediaCard inside a horizontal-scroll row
-   (it's intrinsically 100%-width to also work in LibraryDetail's grid).
-   width + min-width + max-width alongside flex-basis so the size is
-   unambiguous regardless of flex/width precedence — every card in the row
-   ends up pixel-identical instead of shrink/grow-negotiated. */
-.cardSlot {
-  flex: 0 0 150px;
-  width: 150px;
-  min-width: 150px;
-  max-width: 150px;
-  box-sizing: border-box;
+.chip {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
 }
-@media (max-width: 720px) {
-  .cardSlot { flex-basis: 120px; width: 120px; min-width: 120px; max-width: 120px; }
-}
+.chip:hover { background: var(--surface-2); color: var(--text); }
 
-/* ── Next Up badge ───────────────────────────────────────────────────────── */
-/* The only card element unique to this page — MediaCard's own .typeBadge sits
-   top-left and reads a media type, this sits top-right and reads SxxExx.
-   Every other card class (.card, .poster, .progressBar, .cardTitle …) now
-   comes from MediaCard.module.css instead of being restated here. */
-.seriesBadge {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.65);
-  color: var(--text-muted);
-  font-size: 10px;
+/* Amber owns filtering across the app. */
+.chipOn {
+  background: var(--amber);
+  box-shadow: none;
+  color: #2A1A00;
   font-weight: 600;
-  letter-spacing: 0.05em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
 }
+.chipOn:hover { background: var(--amber-hi); color: #2A1A00; }
 
 /* ── Empty state ─────────────────────────────────────────────────────────── */
 .empty {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
-  padding: 100px 0;
-  color: var(--text-muted);
-  font-size: 15px;
+  gap: var(--space-5);
+  padding: var(--space-9) 0;
+  color: var(--text-dim);
 }
 
-/* ── Skeleton loader ─────────────────────────────────────────────────────── */
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--surface) 0%,
-    var(--surface2) 50%,
-    var(--surface) 100%
-  );
+/* ── Skeleton ────────────────────────────────────────────────────────────── */
+/* Mirrors the real layout's geometry so nothing jumps when data lands. */
+.spotlightSkeleton {
+  height: 340px;
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-7);
+  background: linear-gradient(90deg,
+    var(--surface-1) 0%, var(--surface-2) 50%, var(--surface-1) 100%);
   background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-  border-radius: var(--radius);
+  animation: shimmer 1.4s var(--ease-out) infinite;
 }
 
-.skelCard { pointer-events: none; }
+.skelRow { margin-bottom: var(--space-7); }
 
-.skelLine {
-  height: 12px;
-  margin-top: 8px;
+.skelTitle {
+  width: 190px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4);
+  background: var(--surface-2);
+}
+
+.skelStrip {
+  display: flex;
+  gap: var(--space-3);
+  overflow: hidden;
+  padding: var(--space-2) 0 var(--space-5);
 }
 
 @keyframes shimmer {
@@ -103,9 +101,14 @@
   100% { background-position: -200% 0; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .spotlightSkeleton { animation: none; background: var(--surface-2); }
+}
+
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
-/* Card sizing is driven entirely by .cardSlot (see above) — the card itself is
-   intrinsically 100% wide, so narrowing the slot narrows everything inside it. */
 @media (max-width: 720px) {
-  .main { padding: 16px 12px 60px; }
+  .main { padding: var(--space-4) var(--space-4) var(--space-7); }
+  .slot     { flex-basis: 124px; width: 124px; }
+  .slotWide { flex-basis: 216px; width: 216px; }
+  .spotlightSkeleton { height: 280px; }
 }

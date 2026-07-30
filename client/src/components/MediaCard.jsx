@@ -1,21 +1,54 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { api } from '../api/client.js'
 import styles from './MediaCard.module.css'
 
 /**
- * Shared poster card for movies/series — used by Home's rows and the
- * library browse grid. Mirrors Jellyfin's indicators.js: a played checkmark
- * for fully-watched items, an unwatched-episode-count badge for series with
- * remaining episodes, a progress bar for in-progress items, and a
- * hover-to-play overlay button (Jellyfin's CardOverlayButtons) that jumps
- * straight into playback instead of requiring a detail-page visit first.
+ * Shared media card.
  *
- * @param {object}  item           media_items row (list shape — see routes/media.js GET /)
- * @param {boolean} [showProgress] force-show the progress bar (Continue Watching rows)
- * @param {string}  [className]    sizing class from the caller — a fixed
- *   width for a horizontal-scroll row, or omitted to fill a grid cell at 100%
+ * Every colored surface on the card — the hover glow, the scrim, the progress
+ * fill, the focus ring — reads from a single `--art` custom property carrying
+ * the item's own artwork color (media_items.dominant_color, sampled in phase
+ * 02). One variable, set per card, is what makes a grid of these read as a
+ * shelf of distinct titles rather than a uniform wall. When an item has no
+ * usable color the property is simply not set and the stylesheet's cyan
+ * default applies.
+ *
+ * @param {object}  item             media row (see routes/media.js GET /)
+ * @param {boolean} [showProgress]   force the progress bar (Continue Watching)
+ * @param {'poster'|'wide'} [variant] 2:3 poster art, or a 16:9 still for
+ *   in-progress content, where a half-watched episode is a different kind of
+ *   object than a poster you have never opened
+ * @param {string}  [className]      sizing from the caller — a fixed width in a
+ *   scroll row, omitted to fill a grid cell
  */
-export default function MediaCard({ item, showProgress = false, className = '' }) {
+/**
+ * Loading placeholder for a MediaCard.
+ *
+ * Lives in this module and reuses the card's own `.art` class so its aspect
+ * ratio, radius and spacing cannot drift from the real card — the previous
+ * skeleton restated all of that in Home.module.css and had already fallen out
+ * of step with it.
+ */
+export function MediaCardSkeleton({ variant = 'poster', className = '' }) {
+  return (
+    <div className={`${styles.card} ${styles[variant]} ${styles.skeleton} ${className}`} aria-hidden="true">
+      <div className={`${styles.art} ${styles.shimmer}`} />
+      <div className={`${styles.shimmer} ${styles.skelLine}`} style={{ width: '78%' }} />
+      <div className={`${styles.shimmer} ${styles.skelLine}`} style={{ width: '38%', marginTop: 6 }} />
+    </div>
+  )
+}
+
+export default function MediaCard({
+  item,
+  showProgress = false,
+  variant = 'poster',
+  className = '',
+}) {
   const navigate = useNavigate()
+  const [favorite, setFavorite] = useState(!!item.is_favorite)
+  const [busy, setBusy] = useState(false)
 
   const pct = (showProgress || item.position_secs > 0) && item.duration_secs > 0
     ? Math.min(100, Math.round((item.position_secs / item.duration_secs) * 100))
@@ -25,62 +58,113 @@ export default function MediaCard({ item, showProgress = false, className = '' }
   const showPlayedCheck = !isSeries && item.watched === true
   const showUnwatchedCount = isSeries && item.unwatched_count > 0
 
+  // Undefined rather than null: an unset custom property inherits the
+  // stylesheet default, whereas `--art: null` would serialise as a string.
+  const artStyle = item.dominant_color ? { '--art': item.dominant_color } : undefined
+
   function goToDetail() {
     navigate(`/movie/${item.id}`)
   }
 
   function playNow(e) {
     e.stopPropagation()
-    // Series cards in a generic list don't carry an episode to resume —
-    // land on the detail page, same as clicking elsewhere on the card.
-    // Movies auto-start via the ?play=1 flag; Player.jsx resumes from
-    // stored progress on its own, so no position needs to be passed here.
+    // A series in a generic list carries no episode to resume, so it lands on
+    // the detail page. Movies auto-start via ?play=1; Player resumes from
+    // stored progress on its own.
     navigate(isSeries ? `/movie/${item.id}` : `/movie/${item.id}?play=1`)
   }
 
-  // Not a <button> — it contains a nested interactive play button, which
-  // isn't valid inside a native <button>. role="button" + a click/keydown
-  // handler keeps it keyboard- and screen-reader-accessible instead.
+  async function toggleFavorite(e) {
+    e.stopPropagation()
+    if (busy) return
+    const next = !favorite
+    setFavorite(next)          // optimistic — the button is the only reader
+    setBusy(true)
+    try {
+      if (next) await api.post(`/media/${item.id}/favorite`)
+      else      await api.delete(`/media/${item.id}/favorite`)
+    } catch {
+      setFavorite(!next)       // put it back; the server disagreed
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const meta = [
+    item.year,
+    isSeries && item.unwatched_count > 0 ? `${item.unwatched_count} new` : null,
+  ].filter(Boolean).join(' · ')
+
+  // Not a <button>: it contains nested interactive controls, which is invalid
+  // inside one. role="button" plus key handling keeps it operable.
   return (
     <div
-      className={`${styles.card} ${className}`}
+      className={`${styles.card} ${styles[variant]} ${className}`}
+      style={artStyle}
       role="button"
       tabIndex={0}
       onClick={goToDetail}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToDetail() } }}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToDetail() }
+      }}
       title={item.title}
     >
-      <div className={styles.poster}>
+      <div className={styles.art}>
         {item.poster_url
-          ? <img src={item.poster_url} alt={item.title} loading="lazy" />
-          : <div className={styles.posterPlaceholder}>{item.title[0]?.toUpperCase()}</div>
+          ? <img src={item.poster_url} alt="" loading="lazy" />
+          : <div className={styles.placeholder} aria-hidden="true">{item.title[0]?.toUpperCase()}</div>
         }
 
-        <div className={styles.hoverScrim}>
-          <button className={styles.playBtn} onClick={playNow} aria-label={`Play ${item.title}`}>
-            ▶
+        <div className={styles.scrim}>
+          <button
+            className={styles.play}
+            onClick={playNow}
+            tabIndex={-1}
+            aria-label={`Play ${item.title}`}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 5.5v13l11-6.5z" />
+            </svg>
+          </button>
+          <button
+            className={`${styles.fav} ${favorite ? styles.favOn : ''}`}
+            onClick={toggleFavorite}
+            tabIndex={-1}
+            aria-label={favorite ? `Remove ${item.title} from favorites` : `Add ${item.title} to favorites`}
+            aria-pressed={favorite}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24"
+                 fill={favorite ? 'currentColor' : 'none'}
+                 stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+              <path d="m12 4.3 2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 10l5.4-.8z" />
+            </svg>
           </button>
         </div>
 
-        {isSeries && <div className={styles.typeBadge}>SERIES</div>}
-
+        {isSeries && <div className={styles.typeBadge}>Series</div>}
         {showPlayedCheck && (
-          <div className={styles.playedBadge} title="Watched">✓</div>
+          <div className={styles.playedBadge} title="Watched" aria-label="Watched">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m5 13 5 5L20 7" />
+            </svg>
+          </div>
         )}
         {showUnwatchedCount && (
-          <div className={styles.countBadge} title={`${item.unwatched_count} unwatched episode(s)`}>
+          <div className={styles.countBadge} title={`${item.unwatched_count} unwatched`}>
             {item.unwatched_count > 99 ? '99+' : item.unwatched_count}
           </div>
         )}
 
         {pct > 0 && (
-          <div className={styles.progressBar}>
+          <div className={styles.progress}>
             <div className={styles.progressFill} style={{ width: `${pct}%` }} />
           </div>
         )}
       </div>
-      <p className={styles.cardTitle}>{item.title}</p>
-      {item.year && <p className={styles.cardSub}>{item.year}</p>}
+
+      <p className={styles.title}>{item.title}</p>
+      {meta && <p className={styles.meta}>{meta}</p>}
     </div>
   )
 }

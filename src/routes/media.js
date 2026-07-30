@@ -78,6 +78,7 @@ export default async function mediaRoutes(app) {
               m.duration_secs, m.video_codec, m.audio_codec, m.container, m.width, m.height, m.created_at,
               m.metadata, m.dominant_color,
               wp.completed AS watched, wp.position_secs,
+              (uf.user_id IS NOT NULL) AS is_favorite,
               CASE WHEN m.type = 'series' THEN (
                 SELECT COUNT(*)::int FROM episodes e
                 LEFT JOIN watch_progress ewp ON ewp.episode_id = e.id AND ewp.user_id = $1
@@ -85,6 +86,9 @@ export default async function mediaRoutes(app) {
               ) ELSE NULL END AS unwatched_count
        FROM media_items m
        LEFT JOIN watch_progress wp ON wp.media_item_id = m.id AND wp.user_id = $1
+       -- Lets a card render its favourite state correctly on first paint
+       -- instead of guessing and then correcting itself.
+       LEFT JOIN user_favorites uf ON uf.media_item_id = m.id AND uf.user_id = $1
        ${where}
        ORDER BY ${orderBy}
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,

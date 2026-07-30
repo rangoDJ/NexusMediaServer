@@ -1,147 +1,207 @@
-/* Intrinsically fills its container (grid cell, flex slot) — callers control
-   sizing (fixed width for horizontal rows, 1fr for a responsive grid) via
-   the optional className prop rather than this component assuming either. */
+/* ============================================================================
+   MEDIA CARD
+   ----------------------------------------------------------------------------
+   Every colored surface here resolves from --art, the item's own artwork
+   color, set inline by the component. Falling back to --cyan means a card
+   whose poster yielded no usable hue still looks deliberate.
+
+   Intrinsically full-width so the caller controls size: a fixed-width slot in
+   a scroll row, or a 1fr grid cell.
+   ========================================================================== */
 .card {
+  --art: var(--cyan);
+
   width: 100%;
   background: none;
-  padding: 0;
-  border-radius: 0;
-  text-align: left;
   border: none;
+  padding: 0;
+  text-align: left;
   cursor: pointer;
-  transition: transform 0.15s;
+  transition: transform var(--dur) var(--ease-spring);
 }
 
-.card:hover { transform: scale(1.04); }
-.card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-  border-radius: var(--radius);
+.card:hover { transform: translateY(-6px); }
+
+/* The ring is drawn on .art rather than the card so it hugs the artwork
+   instead of the taller box that includes the title. */
+.card:focus-visible { outline: none; }
+.card:focus-visible .art {
+  outline: 2px solid var(--art);
+  outline-offset: 3px;
 }
 
-.poster {
+/* ── Artwork frame ───────────────────────────────────────────────────────── */
+.art {
   position: relative;
   width: 100%;
-  aspect-ratio: 2 / 3;
-  border-radius: var(--radius);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--surface2);
-  margin-bottom: 8px;
+  background: var(--surface-2);
+  margin-bottom: var(--space-3);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--dur) var(--ease-out);
 }
 
-.poster img {
+.poster .art { aspect-ratio: 2 / 3; }
+
+/* In-progress content reads as a still from the thing you were watching, not
+   as another poster you haven't opened. */
+.wide .art { aspect-ratio: 16 / 9; }
+
+.art img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.posterPlaceholder {
+/* The ambient glow — the whole point of the artwork color. Kept as a wide,
+   soft, heavily-offset shadow so it reads as light thrown by the card rather
+   than a border around it. --glow-strength dials it down on light grounds,
+   where a saturated spread reads as smudge. */
+.card:hover .art,
+.card:focus-visible .art {
+  box-shadow:
+    0 18px 36px -12px color-mix(in srgb, var(--art) calc(var(--glow-strength) * 190%), transparent),
+    0 0 0 1px color-mix(in srgb, var(--art) 45%, transparent);
+}
+
+.placeholder {
   width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 52px;
-  font-weight: 700;
-  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: clamp(28px, 22cqw, 52px);
+  font-weight: 800;
+  color: var(--text-faint);
+  background: linear-gradient(150deg,
+    color-mix(in srgb, var(--art) 22%, var(--surface-2)),
+    var(--surface-2));
 }
 
-/* ── Hover-to-play overlay ───────────────────────────────────────────────── */
-.hoverScrim {
+/* ── Hover actions ───────────────────────────────────────────────────────── */
+.scrim {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3);
   opacity: 0;
-  transition: opacity 0.15s;
+  background: linear-gradient(to top,
+    color-mix(in srgb, var(--art) 45%, rgba(0, 0, 0, 0.82)) 0%,
+    transparent 62%);
+  transition: opacity var(--dur) var(--ease-out);
 }
-.card:hover .hoverScrim,
-.card:focus-visible .hoverScrim {
-  opacity: 1;
-}
+.card:hover .scrim,
+.card:focus-visible .scrim { opacity: 1; }
 
-.playBtn {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(255, 255, 255, 0.9);
-  color: #111;
-  font-size: 16px;
+.play,
+.fav {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  padding: 0;
+  border-radius: var(--radius-full);
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
-  transition: transform 0.1s, background 0.1s;
+  transform: translateY(6px);
+  transition: transform var(--dur) var(--ease-spring),
+              background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
 }
-.playBtn:hover { transform: scale(1.08); background: #fff; }
+
+.play {
+  background: #fff;
+  color: #111;
+  padding-left: 2px;   /* optically centres the triangle */
+}
+.play:hover { background: var(--art); color: #06201F; }
+
+.fav {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: #fff;
+  transition-delay: 40ms;
+}
+.fav:hover  { background: rgba(255, 255, 255, 0.28); }
+.favOn      { color: var(--amber); }
+
+.card:hover .play, .card:hover .fav,
+.card:focus-visible .play, .card:focus-visible .fav { transform: translateY(0); }
 
 /* ── Badges ──────────────────────────────────────────────────────────────── */
 .typeBadge {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  background: rgba(0, 0, 0, 0.65);
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
+  top: var(--space-2);
+  left: var(--space-2);
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
 }
 
 .playedBadge,
 .countBadge {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: var(--space-2);
+  right: var(--space-2);
   min-width: 20px;
   height: 20px;
   padding: 0 5px;
-  border-radius: 10px;
+  border-radius: var(--radius-full);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
-.playedBadge {
-  background: var(--accent);
-  color: #fff;
-}
+/* Watched is a completed state, not an accent — it stays semantic green
+   rather than borrowing the artwork color, which would make "watched" mean a
+   different color on every title. */
+.playedBadge { background: var(--success); color: #04231A; }
 
 .countBadge {
-  background: rgba(0, 0, 0, 0.75);
-  color: #fff;
-  border: 1px solid var(--border);
+  background: var(--amber);
+  color: #2A1A00;
 }
 
-/* ── Progress bar ────────────────────────────────────────────────────────── */
-.progressBar {
+/* ── Progress ────────────────────────────────────────────────────────────── */
+.progress {
   position: absolute;
-  bottom: 0;
   left: 0;
   right: 0;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.15);
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .progressFill {
   height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
+  background: linear-gradient(90deg, var(--art), color-mix(in srgb, var(--art) 35%, #fff));
 }
 
 /* ── Text ────────────────────────────────────────────────────────────────── */
-.cardTitle {
-  font-size: 13px;
-  font-weight: 500;
+.title {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -149,8 +209,54 @@
   margin: 0;
 }
 
-.cardSub {
-  font-size: 12px;
-  color: var(--text-muted);
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
   margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.card:hover .meta { color: var(--art); }
+
+/* ── Skeleton ────────────────────────────────────────────────────────────── */
+.skeleton { pointer-events: none; }
+.skeleton:hover { transform: none; }
+
+.shimmer {
+  background: linear-gradient(90deg,
+    var(--surface-1) 0%,
+    var(--surface-2) 50%,
+    var(--surface-1) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s var(--ease-out) infinite;
+  border-radius: var(--radius-md);
+}
+
+.skelLine {
+  height: 11px;
+  border-radius: var(--radius-sm);
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* A pulsing gradient is exactly the kind of ambient motion that reduced-motion
+   is asking to stop; the flat surface still reads as a placeholder. */
+@media (prefers-reduced-motion: reduce) {
+  .shimmer { animation: none; background: var(--surface-2); }
+}
+
+/* ── Motion preference ───────────────────────────────────────────────────── */
+/* The global backstop only shortens durations. The lift and the action-button
+   slide are position changes, so they're removed outright — the glow and scrim
+   still carry the hover state. */
+@media (prefers-reduced-motion: reduce) {
+  .card:hover { transform: none; }
+  .play, .fav { transform: none; }
 }
