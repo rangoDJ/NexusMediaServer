@@ -71,6 +71,33 @@
 /* The UA clear affordance collides with the rounded field on WebKit. */
 .searchInput::-webkit-search-cancel-button { -webkit-appearance: none; }
 
+/* ── Theme toggle ────────────────────────────────────────────────────────── */
+.themeBtn {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+.themeBtn:hover { background: var(--surface-2); color: var(--text); }
+
+/* Marks "match system" so it isn't mistaken for a pinned theme. */
+.themeAuto {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--cyan);
+  box-shadow: 0 0 0 2px var(--surface-0);
+}
+
 /* ── User ────────────────────────────────────────────────────────────────── */
 .user {
   position: relative;
@@ -85,7 +112,7 @@
   padding: 0;
   border-radius: var(--radius-full);
   background: linear-gradient(135deg, var(--amber), var(--magenta));
-  color: #16040E;
+  color: var(--on-amber);
   font-weight: 700;
   font-size: var(--text-sm);
   display: flex;

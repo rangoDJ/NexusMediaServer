@@ -190,7 +190,7 @@
   display: inline-block;
   background: var(--cyan);
   /* Dark ink on a bright accent — white on cyan falls below 3:1. */
-  color: #06201F;
+  color: var(--on-cyan);
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 10px;

@@ -50,6 +50,37 @@ export default function Row({ title, eyebrow, children, className = '' }) {
     el.scrollBy({ left: dir * el.clientWidth * 0.85, behavior: 'smooth' })
   }
 
+  /**
+   * Left/Right paging for keyboard users.
+   *
+   * The arrow buttons are pointer-only (they're aria-hidden and out of the tab
+   * order), so without this a keyboard user's only way through a long row is
+   * to tab every card in it. Home/End jump to either end.
+   *
+   * Only handled when focus is inside the row, and never when it's in a text
+   * field, where arrow keys move the caret.
+   */
+  function onKeyDown(e) {
+    const t = e.target
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return
+
+    switch (e.key) {
+      case 'ArrowRight': e.preventDefault(); scrollBy(1); break
+      case 'ArrowLeft':  e.preventDefault(); scrollBy(-1); break
+      case 'Home':
+        e.preventDefault()
+        scrollerRef.current?.scrollTo({ left: 0, behavior: 'smooth' })
+        break
+      case 'End': {
+        e.preventDefault()
+        const el = scrollerRef.current
+        el?.scrollTo({ left: el.scrollWidth, behavior: 'smooth' })
+        break
+      }
+      default: break
+    }
+  }
+
   return (
     <section className={`${styles.row} ${className}`}>
       <div className={styles.head}>
@@ -57,7 +88,7 @@ export default function Row({ title, eyebrow, children, className = '' }) {
         {eyebrow && <span className={styles.eyebrow}>{eyebrow}</span>}
       </div>
 
-      <div className={styles.viewport}>
+      <div className={styles.viewport} onKeyDown={onKeyDown}>
         <div
           className={`${styles.fade} ${styles.fadeStart} ${atStart ? styles.fadeOff : ''}`}
           aria-hidden="true"

@@ -70,7 +70,10 @@
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
-  color: var(--art);
+  /* Raw --art is an artwork colour tuned to sit on a dark ground — as text on
+     the light theme it measured 1.7:1. Mixing it toward the current text
+     colour keeps the tint while letting it track the theme. */
+  color: color-mix(in srgb, var(--art) 55%, var(--text));
   margin: 0;
 }
 

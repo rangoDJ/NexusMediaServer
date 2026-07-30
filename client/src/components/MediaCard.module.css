@@ -119,7 +119,7 @@
   color: #111;
   padding-left: 2px;   /* optically centres the triangle */
 }
-.play:hover { background: var(--art); color: #06201F; }
+.play:hover { background: var(--art); color: var(--on-cyan); }
 
 .fav {
   background: rgba(255, 255, 255, 0.16);
@@ -174,11 +174,11 @@
 /* Watched is a completed state, not an accent — it stays semantic green
    rather than borrowing the artwork color, which would make "watched" mean a
    different color on every title. */
-.playedBadge { background: var(--success); color: #04231A; }
+.playedBadge { background: var(--success); color: var(--on-success); }
 
 .countBadge {
   background: var(--amber);
-  color: #2A1A00;
+  color: var(--on-amber);
 }
 
 /* ── Progress ────────────────────────────────────────────────────────────── */
@@ -220,7 +220,10 @@
   font-variant-numeric: tabular-nums;
   transition: color var(--dur-fast) var(--ease-out);
 }
-.card:hover .meta { color: var(--art); }
+/* Mixed toward the text colour rather than raw --art: the artwork colours are
+   tuned to sit on a dark ground and several fall below 4.5:1 as text on the
+   light theme. */
+.card:hover .meta { color: color-mix(in srgb, var(--art) 55%, var(--text)); }
 
 /* ── Skeleton ────────────────────────────────────────────────────────────── */
 .skeleton { pointer-events: none; }

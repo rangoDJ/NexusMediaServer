@@ -100,7 +100,7 @@ button {
 
 button.primary {
   background: var(--cyan);
-  color: #06201F;          /* dark ink on a bright accent, not pure white */
+  color: var(--on-cyan);          /* dark ink on a bright accent, not pure white */
   font-weight: 600;
 }
 button.primary:hover { background: var(--cyan-hi); }
@@ -117,7 +117,7 @@ button.ghost:hover {
 
 button.danger {
   background: var(--danger);
-  color: #2A0A0A;
+  color: var(--on-danger);
   font-weight: 600;
 }
 button.danger:hover { filter: brightness(1.08); }

@@ -52,10 +52,10 @@
 .chipOn {
   background: var(--amber);
   box-shadow: none;
-  color: #2A1A00;
+  color: var(--on-amber);
   font-weight: 600;
 }
-.chipOn:hover { background: var(--amber-hi); color: #2A1A00; }
+.chipOn:hover { background: var(--amber-hi); color: var(--on-amber); }
 
 /* ── Empty state ─────────────────────────────────────────────────────────── */
 .empty {

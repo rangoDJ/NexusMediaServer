@@ -31,6 +31,16 @@ export default function MovieDetail() {
   const [error, setError]             = useState(null)
   const [isFavorite, setIsFavorite]   = useState(false)
   const [showRematch, setShowRematch] = useState(false)
+  // Drives the compact action bar that takes over once the hero scrolls away,
+  // so Play stays reachable from anywhere on a long series page.
+  const [heroGone, setHeroGone]       = useState(false)
+
+  useEffect(() => {
+    const onScroll = () => setHeroGone(window.scrollY > 320)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   useEffect(() => {
     Promise.all([
@@ -142,7 +152,37 @@ export default function MovieDetail() {
 
   return (
   <>
-    <div className={styles.page}>
+    {/* --art carries this title's own artwork color to every tinted surface on
+        the page: the hero wash, the poster glow, the section rules and the
+        episode progress bars. Unset when the poster yielded no usable color,
+        so the stylesheet's cyan default applies. */}
+    <div
+      className={styles.page}
+      style={item.dominant_color ? { '--art': item.dominant_color } : undefined}
+    >
+      {/* Takes over once the hero scrolls out of view, keeping the title and
+          Play reachable on a long series page. */}
+      <div className={`${styles.stickyBar} ${heroGone ? styles.stickyOn : ''}`}>
+        <button className={styles.stickyBack} onClick={() => navigate(-1)} aria-label="Back">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m15 5-7 7 7 7" />
+          </svg>
+        </button>
+        <span className={styles.stickyTitle}>{item.title}</span>
+        {item.type !== 'series' && (
+          <button
+            className={styles.stickyPlay}
+            onClick={() => setPlaying({ mediaItemId: item.id, title: item.title })}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 5.5v13l11-6.5z" />
+            </svg>
+            Play
+          </button>
+        )}
+      </div>
+
       {/* ── Hero with blurred backdrop ─────────────────────────────────── */}
       <div className={styles.hero}>
         {item.backdrop_url && (
@@ -151,6 +191,7 @@ export default function MovieDetail() {
             style={{ backgroundImage: `url(${item.backdrop_url})` }}
           />
         )}
+        <div className={styles.heroWash} aria-hidden="true" />
         <div className={styles.heroGradient} />
 
         <div className={styles.heroInner}>
@@ -247,28 +288,48 @@ export default function MovieDetail() {
 
               {openSeason === season && (
                 <div className={styles.episodeList}>
-                  {(episodesBySeason[season] ?? []).map(ep => (
-                    <div key={ep.id} className={styles.episodeRow}>
-                      <span className={styles.epNumber}>
-                        S{pad(season)}E{pad(ep.episode_number)}
-                      </span>
-                      <div className={styles.epInfo}>
-                        <p className={styles.epTitle}>{ep.title ?? `Episode ${ep.episode_number}`}</p>
+                  {(episodesBySeason[season] ?? []).map(ep => {
+                    const play = () => setPlaying({
+                      episodeId: ep.id,
+                      title: `${item.title} · S${pad(season)}E${pad(ep.episode_number)}${ep.title ? ` — ${ep.title}` : ''}`,
+                    })
+                    return (
+                      <div
+                        key={ep.id}
+                        className={styles.episodeRow}
+                        role="button"
+                        tabIndex={0}
+                        onClick={play}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play() }
+                        }}
+                      >
+                        {/* Episodes have no artwork of their own, so the thumb
+                            is the series poster tinted by its color — see
+                            migration 024. */}
+                        <div className={styles.epThumb}>
+                          {item.poster_url
+                            ? <img src={item.poster_url} alt="" loading="lazy" />
+                            : <span className={styles.epThumbFallback}>{pad(ep.episode_number)}</span>}
+                          <span className={styles.epThumbPlay} aria-hidden="true">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M8 5.5v13l11-6.5z" />
+                            </svg>
+                          </span>
+                        </div>
+
+                        <div className={styles.epInfo}>
+                          <p className={styles.epNumber}>S{pad(season)}E{pad(ep.episode_number)}</p>
+                          <p className={styles.epTitle}>{ep.title ?? `Episode ${ep.episode_number}`}</p>
+                          {ep.plot && <p className={styles.epPlot}>{ep.plot}</p>}
+                        </div>
+
                         {ep.duration_secs && (
-                          <p className={styles.epMeta}>{fmt(ep.duration_secs)}</p>
+                          <span className={styles.epMeta}>{fmt(ep.duration_secs)}</span>
                         )}
                       </div>
-                      <button
-                        className={`primary ${styles.epPlayBtn}`}
-                        onClick={() => setPlaying({
-                          episodeId: ep.id,
-                          title: `${item.title} · S${pad(season)}E${pad(ep.episode_number)}${ep.title ? ` — ${ep.title}` : ''}`
-                        })}
-                      >
-                        ▶
-                      </button>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>

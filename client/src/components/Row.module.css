@@ -25,7 +25,10 @@
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
-  color: var(--text-faint);
+  /* --text-faint is for placeholders and disabled controls, where 4.5:1 is not
+     required. This is real 12px copy and measured 3.6:1 against the page in
+     both themes, so it steps up to --text-dim. */
+  color: var(--text-dim);
 }
 
 .viewport { position: relative; }

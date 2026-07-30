@@ -16,7 +16,8 @@
   font-size: 14px;
 }
 .errorBox {
-  color: #e05555;
+  /* Was a hardcoded #e05555 predating the palette. */
+  color: var(--danger);
   flex-direction: column;
   gap: 14px;
 }
@@ -70,12 +71,12 @@
   color: #fff;
 }
 .statsBtnActive {
-  background: var(--accent, #7b5ea7);
-  border-color: var(--accent, #7b5ea7);
+  background: var(--magenta);
+  border-color: var(--magenta);
   color: #fff;
 }
 .statsBtnActive:hover {
-  background: var(--accent, #7b5ea7);
+  background: var(--magenta);
   border-color: rgba(255, 255, 255, 0.5);
 }
 
@@ -245,7 +246,7 @@
 
 .qualityActive {
   background: rgba(255, 255, 255, 0.06);
-  color: var(--accent);
+  color: var(--cyan);
 }
 .qualityActive:hover {
   background: rgba(255, 255, 255, 0.1);
@@ -257,7 +258,7 @@
   font-weight: 400;
 }
 .qualityActive .qualitySub {
-  color: var(--accent);
+  color: var(--cyan);
   opacity: 0.7;
 }
 
@@ -372,7 +373,7 @@
 .seekFill {
   position: absolute;
   top: 0; left: 0; bottom: 0;
-  background: var(--accent, #7b5ea7);
+  background: var(--magenta);
   border-radius: 2px;
 }
 
@@ -382,7 +383,7 @@
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: var(--accent, #7b5ea7);
+  background: var(--magenta);
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
   transform: translate(-50%, -50%);
 }
@@ -450,7 +451,7 @@
 
 .volumeSlider {
   width: 70px;
-  accent-color: var(--accent, #7b5ea7);
+  accent-color: var(--magenta);
   cursor: pointer;
 }
 

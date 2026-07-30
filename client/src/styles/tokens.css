@@ -67,6 +67,18 @@
   --danger:  #FF6B6B;
   --info:    var(--cyan);
 
+  /* ── Accent foregrounds ──────────────────────────────────────────────── */
+  /* Text/icon colour to use ON a filled accent. These have to flip with the
+     theme: on dark the accents are bright, so they take a dark ink; on light
+     the same accents are darkened to hold against white, so they need light
+     text. Hardcoding a dark ink (as the first pass did) silently failed
+     contrast on light — an amber chip measured 3.31:1. */
+  --on-cyan:    #06201F;
+  --on-magenta: #2A0716;
+  --on-amber:   #2A1A00;
+  --on-success: #04231A;
+  --on-danger:  #2A0A0A;
+
   /* ── Ambient (per-item artwork color) ────────────────────────────────── */
   /* Components set --art locally; this is the library-wide fallback. */
   --art: var(--cyan);
@@ -183,6 +195,13 @@
   --success: #047857;
   --danger:  #C42B2B;
 
+  /* Accents are dark on this ground, so their foregrounds invert. */
+  --on-cyan:    #FFFFFF;
+  --on-magenta: #FFFFFF;
+  --on-amber:   #FFFFFF;
+  --on-success: #FFFFFF;
+  --on-danger:  #FFFFFF;
+
   --glow-strength: 0.10;
 
   --shadow-1: 0 1px 2px rgba(28, 20, 60, 0.06);
@@ -220,6 +239,12 @@
 
   --success: #34D399;
   --danger:  #FF6B6B;
+
+  --on-cyan:    #06201F;
+  --on-magenta: #2A0716;
+  --on-amber:   #2A1A00;
+  --on-success: #04231A;
+  --on-danger:  #2A0A0A;
 
   --glow-strength: 0.30;
 

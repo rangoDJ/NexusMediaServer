@@ -1,7 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
+import { useTheme } from '../hooks/useTheme.js'
 import styles from './TopBar.module.css'
+
+const THEME_LABEL = { system: 'Match system', dark: 'Dark', light: 'Light' }
+
+function ThemeIcon({ resolved }) {
+  const p = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+              strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }
+  return resolved === 'light'
+    ? <svg {...p}><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.1 5.1l1.4 1.4M17.5 17.5l1.4 1.4M18.9 5.1l-1.4 1.4M6.5 17.5l-1.4 1.4" /></svg>
+    : <svg {...p}><path d="M20 13.5A8 8 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5Z" /></svg>
+}
 
 /* Routes that own their own hero/title. The bar stays transparent and
    title-less over these so it floats on the artwork instead of stacking a
@@ -33,6 +44,7 @@ export default function TopBar() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [query, setQuery] = useState('')
   const menuRef = useRef(null)
+  const { pref, resolved, cycle } = useTheme()
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const [searchParams] = useSearchParams()
@@ -103,6 +115,18 @@ export default function TopBar() {
           aria-label="Search"
         />
       </form>
+
+      <button
+        className={styles.themeBtn}
+        onClick={cycle}
+        title={`Theme: ${THEME_LABEL[pref]}`}
+        aria-label={`Theme: ${THEME_LABEL[pref]}. Activate to change.`}
+      >
+        <ThemeIcon resolved={resolved} />
+        {/* 'system' is otherwise indistinguishable from whichever theme it
+            currently resolves to. */}
+        {pref === 'system' && <span className={styles.themeAuto} aria-hidden="true" />}
+      </button>
 
       <div className={styles.user} ref={menuRef}>
         <button
