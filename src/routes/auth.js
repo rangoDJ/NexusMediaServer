@@ -1,5 +1,6 @@
 import bcrypt from 'bcrypt'
 import crypto from 'crypto'
+import { secureCookies } from '../config/security.js'
 import { getSetting } from '../services/settingsCache.js'
 import { callHook } from '../services/pluginLoader.js'
 import { logActivity } from '../services/activityLog.js'
@@ -20,8 +21,10 @@ function generateRefreshToken() {
 // The refresh cookie is scoped to /api/v1/auth so it's never sent on ordinary
 // API/media requests. Tokens are still also returned in the JSON body for
 // non-browser API clients (mobile apps, scripts) that manage their own storage.
+// The `Secure` attribute is gated on NEXUS_HTTPS, not NODE_ENV — see
+// secureCookies() in config/security.js for why that distinction matters.
 function setAuthCookies(reply, { access_token, refresh_token }, sessionDays) {
-  const secure = process.env.NODE_ENV === 'production'
+  const secure = secureCookies()
   reply.setCookie('nexus_access', access_token, {
     httpOnly: true, sameSite: 'strict', secure, path: '/', maxAge: ACCESS_TOKEN_TTL_SECS,
   })

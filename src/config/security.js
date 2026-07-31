@@ -24,6 +24,27 @@
  * default, so they're opt-in via NEXUS_HTTPS=true — set it when a reverse
  * proxy terminates TLS in front of Nexus.
  */
+/**
+ * Whether auth cookies may carry the `Secure` attribute.
+ *
+ * Same deployment assumption as helmetOptions() above, and it must be keyed
+ * off the same flag. A `Secure` cookie delivered over plain HTTP is discarded
+ * by the browser without warning: the login request still returns 200 with a
+ * user record, the SPA still routes to the home page, and then the very first
+ * API call comes back 401 because no cookie was ever stored — which the client
+ * (correctly) treats as a dead session and bounces to /login. The symptom is a
+ * login that appears to succeed and instantly logs itself back out.
+ *
+ * Keying this off NODE_ENV is what caused exactly that: docker-compose.yml
+ * sets NODE_ENV=production, but the documented way to reach a self-hosted
+ * install is http://<server-ip>. (http://localhost happens to work, because
+ * browsers treat localhost as a trustworthy origin — so the bug hides during
+ * local testing and only appears once someone connects over the LAN.)
+ */
+export function secureCookies(env = process.env) {
+  return env.NEXUS_HTTPS === 'true'
+}
+
 export function helmetOptions(env = process.env) {
   const https = env.NEXUS_HTTPS === 'true'
 
