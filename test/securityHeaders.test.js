@@ -46,6 +46,17 @@ describe('security headers — plain-HTTP deployment (default)', () => {
     expect(csp).toContain('blob:')
     expect(h['x-content-type-options']).toBe('nosniff')
   })
+
+  it('allows poster/backdrop artwork from TMDB\'s image CDN', async () => {
+    // tmdb.js builds poster_url/backdrop_url as https://image.tmdb.org/...
+    // whenever an item has no local artwork file, which is most of a typical
+    // library. img-src without this origin makes the browser silently drop
+    // every TMDB-hosted <img> — nothing throws, the poster just never
+    // appears, which is what made this easy to ship unnoticed.
+    const csp = (await headersFor())['content-security-policy']
+    const imgSrc = csp.split(';').find(d => d.trim().startsWith('img-src'))
+    expect(imgSrc).toContain('https://image.tmdb.org')
+  })
 })
 
 describe('security headers — TLS deployment (opt-in)', () => {

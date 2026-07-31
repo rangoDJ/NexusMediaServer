@@ -56,7 +56,13 @@ export function helmetOptions(env = process.env) {
         // The client build inlines styles; CSS-in-JS and inline style
         // attributes (the per-item --art custom property) need this.
         styleSrc:   ["'self'", "'unsafe-inline'"],
-        imgSrc:     ["'self'", 'data:', 'blob:'],
+        // Posters/backdrops render straight from TMDB's CDN (tmdb.js builds
+        // poster_url/backdrop_url as https://image.tmdb.org/...) whenever an
+        // item has no local artwork file — that's most of a typical library.
+        // Without this the browser silently drops every TMDB-hosted image
+        // and the <img> just renders blank; nothing errors loudly enough to
+        // point at the CSP as the cause.
+        imgSrc:     ["'self'", 'data:', 'blob:', 'https://image.tmdb.org'],
         // blob: is required by hls.js, which feeds segments to the video
         // element through object URLs.
         mediaSrc:   ["'self'", 'blob:'],
