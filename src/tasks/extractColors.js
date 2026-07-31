@@ -1,5 +1,5 @@
 import PQueue from 'p-queue'
-import { extractDominantColor } from '../services/colorExtractor.js'
+import { extractArtwork } from '../services/colorExtractor.js'
 
 // Posters mostly come from TMDB, so this is network-bound. Six at a time keeps
 // a large backfill moving without hammering their CDN.
@@ -11,9 +11,13 @@ const CONCURRENCY = 6
 const BATCH_LIMIT = 500
 
 export const extractColorsTask = {
+  // Kept as 'extract-colors' (not renamed to something blurhash-inclusive)
+  // so this doesn't orphan existing scheduled_task_runs history under a
+  // different task id — it now does more than its name suggests, but the id
+  // is the durable key.
   id:          'extract-colors',
-  name:        'Extract Artwork Colors',
-  description: 'Samples each poster for the accent color the UI uses to tint that title.',
+  name:        'Sample Artwork Placeholders',
+  description: 'Decodes each poster once for its blurhash placeholder (used while the real image loads) and dominant color.',
   category:    'Media',
 
   defaultTriggers: [
@@ -44,15 +48,16 @@ export const extractColorsTask = {
 
     const queue = new PQueue({ concurrency: CONCURRENCY })
     let done = 0
-    let found = 0
+    let placeholders = 0
 
     for (const item of rows) {
       queue.add(async () => {
         if (signal.aborted) return
 
         // Prefer the local file: no network, and it's the artwork the user
-        // actually put next to the media.
-        const color = await extractDominantColor({
+        // actually put next to the media. One decode produces both fields —
+        // see extractArtwork()'s own doc comment for why that matters.
+        const { color, blurhash } = await extractArtwork({
           filePath: item.local_poster_path ?? null,
           url:      item.local_poster_path ? null : item.poster_url,
         })
@@ -62,13 +67,13 @@ export const extractColorsTask = {
         // Stamp color_extracted_at either way — that is what marks this row
         // as attempted and keeps it out of the next run's query.
         await db.query(
-          'UPDATE media_items SET dominant_color=$1, color_extracted_at=now() WHERE id=$2',
-          [color, item.id]
+          'UPDATE media_items SET dominant_color=$1, blurhash=$2, color_extracted_at=now() WHERE id=$3',
+          [color, blurhash, item.id]
         ).catch(err =>
-          log.warn({ err }, `[tasks/colors] Failed to store color for "${item.title}"`)
+          log.warn({ err }, `[tasks/colors] Failed to store artwork sample for "${item.title}"`)
         )
 
-        if (color) found++
+        if (blurhash) placeholders++
         done++
         progress(Math.round((done / rows.length) * 100))
       })
@@ -82,8 +87,8 @@ export const extractColorsTask = {
     }
 
     log.info(
-      `[tasks/colors] Done — ${found} color(s) from ${done} poster(s); ` +
-      `${done - found} had no usable hue`
+      `[tasks/colors] Done — ${placeholders} placeholder(s) from ${done} poster(s); ` +
+      `${done - placeholders} could not be decoded`
     )
   },
 }

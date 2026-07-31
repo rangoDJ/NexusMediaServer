@@ -1,27 +1,21 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
+import Blurhash from './Blurhash.jsx'
 import styles from './MediaCard.module.css'
 
-/**
- * Shared media card.
- *
- * Every colored surface on the card — the hover glow, the scrim, the progress
- * fill, the focus ring — reads from a single `--art` custom property carrying
- * the item's own artwork color (media_items.dominant_color, sampled in phase
- * 02). One variable, set per card, is what makes a grid of these read as a
- * shelf of distinct titles rather than a uniform wall. When an item has no
- * usable color the property is simply not set and the stylesheet's cyan
- * default applies.
- *
- * @param {object}  item             media row (see routes/media.js GET /)
- * @param {boolean} [showProgress]   force the progress bar (Continue Watching)
- * @param {'poster'|'wide'} [variant] 2:3 poster art, or a 16:9 still for
- *   in-progress content, where a half-watched episode is a different kind of
- *   object than a poster you have never opened
- * @param {string}  [className]      sizing from the caller — a fixed width in a
- *   scroll row, omitted to fill a grid cell
- */
+// jellyfin-web's literal defaultCardBackground1..5, cycled by item id — see
+// tokens.css. Used only when an item has no artwork at all; it is not a
+// colour sampled from anything (that's the previous, Nexus-only design).
+const FALLBACK_COUNT = 5
+
+/** Deterministic 1..5 from an item id, stable across renders and reloads. */
+export function fallbackIndex(id) {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return (h % FALLBACK_COUNT) + 1
+}
+
 /**
  * Loading placeholder for a MediaCard.
  *
@@ -40,6 +34,24 @@ export function MediaCardSkeleton({ variant = 'poster', className = '' }) {
   )
 }
 
+/**
+ * Shared media card, matching jellyfin-web's actual card behaviour rather
+ * than the earlier per-item extracted-colour treatment: a blurhash decode
+ * shown behind the poster while it loads (components/cardbuilder/
+ * cardImage.ts), and — only for items with no artwork at all — one of 5
+ * fixed fallback colours cycled by item id (defaultCardBackground1..5).
+ * Every other coloured surface (hover ring, progress fill, badges) uses the
+ * single app accent, matching Jellyfin's own indicators (itemProgressBarForeground/
+ * playedIndicator/countIndicator all resolve to --jf-palette-primary-main).
+ *
+ * @param {object}  item             media row (see routes/media.js GET /)
+ * @param {boolean} [showProgress]   force the progress bar (Continue Watching)
+ * @param {'poster'|'wide'} [variant] 2:3 poster art, or a 16:9 still for
+ *   in-progress content, where a half-watched episode is a different kind of
+ *   object than a poster you have never opened
+ * @param {string}  [className]      sizing from the caller — a fixed width in a
+ *   scroll row, omitted to fill a grid cell
+ */
 export default function MediaCard({
   item,
   showProgress = false,
@@ -49,6 +61,7 @@ export default function MediaCard({
   const navigate = useNavigate()
   const [favorite, setFavorite] = useState(!!item.is_favorite)
   const [busy, setBusy] = useState(false)
+  const [imgLoaded, setImgLoaded] = useState(false)
 
   const pct = (showProgress || item.position_secs > 0) && item.duration_secs > 0
     ? Math.min(100, Math.round((item.position_secs / item.duration_secs) * 100))
@@ -57,10 +70,6 @@ export default function MediaCard({
   const isSeries = item.type === 'series'
   const showPlayedCheck = !isSeries && item.watched === true
   const showUnwatchedCount = isSeries && item.unwatched_count > 0
-
-  // Undefined rather than null: an unset custom property inherits the
-  // stylesheet default, whereas `--art: null` would serialise as a string.
-  const artStyle = item.dominant_color ? { '--art': item.dominant_color } : undefined
 
   function goToDetail() {
     navigate(`/movie/${item.id}`)
@@ -100,7 +109,6 @@ export default function MediaCard({
   return (
     <div
       className={`${styles.card} ${styles[variant]} ${className}`}
-      style={artStyle}
       role="button"
       tabIndex={0}
       onClick={goToDetail}
@@ -110,10 +118,30 @@ export default function MediaCard({
       title={item.title}
     >
       <div className={styles.art}>
-        {item.poster_url
-          ? <img src={item.poster_url} alt="" loading="lazy" />
-          : <div className={styles.placeholder} aria-hidden="true">{item.title[0]?.toUpperCase()}</div>
-        }
+        {item.poster_url ? (
+          <>
+            {/* Shown until the real image paints, then hidden — matches
+                jellyfin-web's blurhash-behind-the-poster pattern. Skipped
+                entirely (renders null) once there's no hash or the image has
+                already loaded, so it doesn't sit in the DOM forever. */}
+            {!imgLoaded && <Blurhash hash={item.blurhash} className={styles.blurhash} />}
+            <img
+              src={item.poster_url}
+              alt=""
+              loading="lazy"
+              className={`${styles.poster} ${imgLoaded ? styles.posterLoaded : ''}`}
+              onLoad={() => setImgLoaded(true)}
+            />
+          </>
+        ) : (
+          <div
+            className={styles.placeholder}
+            style={{ '--fallback': `var(--card-fallback-${fallbackIndex(item.id)})` }}
+            aria-hidden="true"
+          >
+            {item.title[0]?.toUpperCase()}
+          </div>
+        )}
 
         <div className={styles.scrim}>
           <button

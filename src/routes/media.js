@@ -76,7 +76,7 @@ export default async function mediaRoutes(app) {
     const { rows } = await app.db.query(
       `SELECT m.id, m.library_id, m.type, m.title, m.year, m.genres, m.poster_url, m.backdrop_url, m.rating,
               m.duration_secs, m.video_codec, m.audio_codec, m.container, m.width, m.height, m.created_at,
-              m.metadata, m.dominant_color,
+              m.metadata, m.dominant_color, m.blurhash,
               wp.completed AS watched, wp.position_secs,
               (uf.user_id IS NOT NULL) AS is_favorite,
               CASE WHEN m.type = 'series' THEN (
@@ -138,7 +138,7 @@ export default async function mediaRoutes(app) {
     const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
     const { rows } = await app.db.query(`
       SELECT m.id, m.type, m.title, m.year, m.poster_url, m.duration_secs,
-             m.dominant_color,
+             m.dominant_color, m.blurhash,
              wp.position_secs, wp.updated_at
       FROM watch_progress wp
       JOIN media_items m ON m.id = wp.media_item_id
@@ -156,7 +156,7 @@ export default async function mediaRoutes(app) {
     const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
     const { rows } = await app.db.query(`
       SELECT m.id, m.type, m.title, m.year, m.poster_url, m.backdrop_url,
-             m.duration_secs, m.metadata, m.dominant_color,
+             m.duration_secs, m.metadata, m.dominant_color, m.blurhash,
              uf.created_at AS favorited_at,
              wp.completed AS watched, wp.position_secs,
              CASE WHEN m.type = 'series' THEN (
@@ -197,9 +197,10 @@ export default async function mediaRoutes(app) {
         m.title         AS series_title,
         m.poster_url,
         m.metadata,
-        -- Episodes have no artwork of their own, so they inherit the accent
-        -- of their parent series.
+        -- Episodes have no artwork of their own, so they inherit their
+        -- parent series' sample for both fields.
         m.dominant_color,
+        m.blurhash,
         e.id            AS episode_id,
         e.season_number,
         e.episode_number,

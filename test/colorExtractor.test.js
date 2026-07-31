@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { isBlurhashValid, decode as decodeBlurhash } from 'blurhash'
 import {
   rgbToHsl,
   hslToHex,
   dominantColorFromPixels,
   extractDominantColor,
+  blurhashFromPixels,
+  extractArtwork,
 } from '../src/services/colorExtractor.js'
 
 /** Build an RGBA image of solid-colored vertical bands. */
@@ -114,6 +117,39 @@ describe('dominantColorFromPixels', () => {
   })
 })
 
+describe('blurhashFromPixels', () => {
+  it('produces a valid blurhash for a real image', () => {
+    const hash = blurhashFromPixels(image([[220, 40, 40], [40, 60, 220]], { width: 64, height: 96 }))
+    expect(hash).not.toBeNull()
+    expect(isBlurhashValid(hash).result).toBe(true)
+  })
+
+  it('decodes back to pixels whose average colour resembles the source', () => {
+    // Blurhash is lossy by design (that's the point — it's a placeholder,
+    // not a thumbnail), so this checks the decoded average lands in the
+    // right neighbourhood rather than exact pixels.
+    const hash = blurhashFromPixels(image([[230, 30, 30]], { width: 64, height: 96 }))
+    const pixels = decodeBlurhash(hash, 32, 32)
+    let r = 0, g = 0, b = 0
+    for (let i = 0; i < pixels.length; i += 4) { r += pixels[i]; g += pixels[i + 1]; b += pixels[i + 2] }
+    const n = pixels.length / 4
+    expect(r / n).toBeGreaterThan(g / n)
+    expect(r / n).toBeGreaterThan(b / n)
+  })
+
+  it('handles an image already smaller than the downsample target', () => {
+    // Exercises the scale > 1 (upsampling) path in downsample() rather than
+    // only ever shrinking.
+    const hash = blurhashFromPixels(image([[100, 150, 200]], { width: 8, height: 8 }))
+    expect(hash).not.toBeNull()
+    expect(isBlurhashValid(hash).result).toBe(true)
+  })
+
+  it('returns null for a zero-dimension image', () => {
+    expect(blurhashFromPixels({ data: new Uint8Array(0), width: 0, height: 0 })).toBeNull()
+  })
+})
+
 describe('extractDominantColor (real encoded images)', () => {
   // The unit tests above feed raw pixel arrays, which skips decoding entirely.
   // These encode genuine JPEG and PNG files so the jpeg-js / pngjs paths and
@@ -167,6 +203,37 @@ describe('extractDominantColor (real encoded images)', () => {
     const png = new PNG({ width: W, height: H })
     png.data = posterPixels(130, 130, 130)
     expect(await extractDominantColor({ filePath: await tmpFile('grey.png', PNG.sync.write(png)) })).toBeNull()
+  })
+})
+
+describe('extractArtwork (real encoded images)', () => {
+  const W = 60, H = 90
+
+  async function tmpFile(name, bytes) {
+    const { writeFile, mkdtemp } = await import('fs/promises')
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const dir = await mkdtemp(join(tmpdir(), 'nexus-artwork-'))
+    const file = join(dir, name)
+    await writeFile(file, bytes)
+    return file
+  }
+
+  it('returns both a colour and a blurhash from a single decode', async () => {
+    const jpeg = (await import('jpeg-js')).default
+    const data = Buffer.alloc(W * H * 4)
+    for (let i = 0; i < W * H; i++) {
+      data[i * 4] = 210; data[i * 4 + 1] = 60; data[i * 4 + 2] = 60; data[i * 4 + 3] = 255
+    }
+    const bytes = jpeg.encode({ data, width: W, height: H }, 90).data
+    const { color, blurhash } = await extractArtwork({ filePath: await tmpFile('poster.jpg', bytes) })
+
+    expect(color).toMatch(/^#[0-9A-F]{6}$/)
+    expect(isBlurhashValid(blurhash).result).toBe(true)
+  })
+
+  it('returns nulls for both fields, not a throw, when the source is missing', async () => {
+    expect(await extractArtwork({ filePath: '/does/not/exist.jpg' })).toEqual({ color: null, blurhash: null })
   })
 })
 

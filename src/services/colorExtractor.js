@@ -2,16 +2,28 @@ import { readFile } from 'fs/promises'
 import axios from 'axios'
 import jpeg from 'jpeg-js'
 import { PNG } from 'pngjs'
+import { encode as encodeBlurhash } from 'blurhash'
 
 /**
- * Dominant-colour extraction for poster artwork.
+ * Poster artwork sampling: a blurhash placeholder (matching jellyfin-web,
+ * which shows one behind every poster while the real image loads — see
+ * components/cardbuilder/cardImage.ts) and, retained alongside it, the
+ * dominant-colour extraction from the original Nexus-original UI direction.
+ *
+ * jellyfin-web itself has no per-item colour system — cards that have no
+ * artwork at all fall back to one of 5 fixed palette colours cycled by item
+ * id, not anything sampled. dominant_color is kept computed (it's cheap,
+ * reuses the same decoded pixels blurhash needs, and the column/tests already
+ * exist) but nothing in the Jellyfin-parity UI reads it after this pass —
+ * only blurhash and the fixed fallback are used for card visuals now.
  *
  * Runs in-process rather than on a transcoder node. Every other media
  * operation here (ffprobe, trickplay, chromaprint) is delegated over HTTP,
  * but those all need ffmpeg on a file in the media volume. This needs neither:
  * posters are small, most of them live on TMDB rather than on disk, and the
  * result is cosmetic. Making it depend on a reachable — and amd64-only —
- * transcoder would mean the UI loses its colour whenever that node is down.
+ * transcoder would mean the UI loses its placeholder whenever that node is
+ * down.
  *
  * The decoders are deliberately pure JS. sharp would be faster, but it is a
  * native module and this image is built for linux/amd64 *and* linux/arm64
@@ -164,6 +176,56 @@ export function dominantColorFromPixels(image) {
   return hslToHex(h, s, l)
 }
 
+// blurhash's encode() visits every pixel of the buffer it's given — it does
+// not sample internally the way dominantColorFromPixels() does. Encoding a
+// full 500x750 TMDB poster directly would mean visiting ~375,000 pixels per
+// item across a library backfill; downsampling first is standard blurhash
+// practice; 32px on the long edge is plenty for a blur-only placeholder.
+const BLURHASH_MAX_DIM = 32
+// 4x3 components — the commonly-used default component count for photo-like
+// artwork (enough horizontal detail for a wide poster/backdrop, less
+// vertical, since posters are usually taller than they are wide anyway).
+const BLURHASH_COMPONENTS = { x: 4, y: 3 }
+
+/** Nearest-neighbour downsample to RGBA Uint8ClampedArray, longest edge capped at maxDim. */
+function downsample(image, maxDim) {
+  const { data, width, height } = image
+  const scale = maxDim / Math.max(width, height)
+  const outW = Math.max(1, Math.round(width * scale))
+  const outH = Math.max(1, Math.round(height * scale))
+  const out = new Uint8ClampedArray(outW * outH * 4)
+
+  for (let y = 0; y < outH; y++) {
+    const srcY = Math.min(height - 1, Math.floor(y / scale))
+    for (let x = 0; x < outW; x++) {
+      const srcX = Math.min(width - 1, Math.floor(x / scale))
+      const si = (srcY * width + srcX) * 4
+      const di = (y * outW + x) * 4
+      out[di] = data[si]; out[di + 1] = data[si + 1]; out[di + 2] = data[si + 2]; out[di + 3] = data[si + 3]
+    }
+  }
+  return { data: out, width: outW, height: outH }
+}
+
+/**
+ * Encode a blurhash placeholder from decoded RGBA pixels.
+ *
+ * Exported separately from the I/O for the same reason
+ * dominantColorFromPixels() is — testable against synthetic pixel data.
+ *
+ * @param {{data: Uint8Array|Buffer, width: number, height: number}} image
+ * @returns {string|null} a blurhash string, or null on any encode failure
+ */
+export function blurhashFromPixels(image) {
+  if (!image.width || !image.height) return null
+  try {
+    const small = downsample(image, BLURHASH_MAX_DIM)
+    return encodeBlurhash(small.data, small.width, small.height, BLURHASH_COMPONENTS.x, BLURHASH_COMPONENTS.y)
+  } catch {
+    return null
+  }
+}
+
 /** Load poster bytes from a URL or an absolute path. Returns null on failure. */
 async function loadBytes({ url, filePath }) {
   if (filePath) {
@@ -200,5 +262,33 @@ export async function extractDominantColor(source) {
     return dominantColorFromPixels(image)
   } catch {
     return null
+  }
+}
+
+/**
+ * Sample a poster once and return everything the backfill task needs from
+ * it — decoding is the expensive/fallible part (network fetch, JPEG/PNG
+ * parse), so callers that want both values should use this rather than call
+ * extractDominantColor() and a hypothetical extractBlurhash() separately,
+ * which would fetch and decode the same image twice.
+ *
+ * Never throws. Either field may independently be null (e.g. a valid decode
+ * of a perfectly grey poster yields a blurhash but no dominant color).
+ *
+ * @param {{url?: string|null, filePath?: string|null}} source
+ * @returns {Promise<{color: string|null, blurhash: string|null}>}
+ */
+export async function extractArtwork(source) {
+  try {
+    const bytes = await loadBytes(source)
+    if (!bytes) return { color: null, blurhash: null }
+    const image = decode(bytes)
+    if (!image?.data?.length) return { color: null, blurhash: null }
+    return {
+      color: dominantColorFromPixels(image),
+      blurhash: blurhashFromPixels(image),
+    }
+  } catch {
+    return { color: null, blurhash: null }
   }
 }

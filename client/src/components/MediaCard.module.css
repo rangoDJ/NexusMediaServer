@@ -1,16 +1,17 @@
 /* ============================================================================
    MEDIA CARD
    ----------------------------------------------------------------------------
-   Every colored surface here resolves from --art, the item's own artwork
-   color, set inline by the component. Falling back to --cyan means a card
-   whose poster yielded no usable hue still looks deliberate.
+   Matches jellyfin-web's actual card behaviour rather than a per-item
+   extracted-colour treatment: a blurhash decode shown behind the poster while
+   it loads, and — only when an item has no artwork at all — one of the 5
+   fixed --card-fallback-N colours (tokens.css), cycled by item id. Every
+   other coloured surface (hover ring, progress fill, badges) is the single
+   app accent (--primary), matching Jellyfin's own indicators.
 
    Intrinsically full-width so the caller controls size: a fixed-width slot in
    a scroll row, or a 1fr grid cell.
    ========================================================================== */
 .card {
-  --art: var(--cyan);
-
   width: 100%;
   background: none;
   border: none;
@@ -26,7 +27,7 @@
    instead of the taller box that includes the title. */
 .card:focus-visible { outline: none; }
 .card:focus-visible .art {
-  outline: 2px solid var(--art);
+  outline: 2px solid var(--primary);
   outline-offset: 3px;
 }
 
@@ -48,22 +49,28 @@
    as another poster you haven't opened. */
 .wide .art { aspect-ratio: 16 / 9; }
 
-.art img {
+/* Blurhash canvas and the real <img> occupy the same box and crossfade —
+   the canvas is removed from the DOM (see MediaCard.jsx) once the image has
+   painted, rather than staying underneath forever. */
+.blurhash,
+.poster {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-/* The ambient glow — the whole point of the artwork color. Kept as a wide,
-   soft, heavily-offset shadow so it reads as light thrown by the card rather
-   than a border around it. --glow-strength dials it down on light grounds,
-   where a saturated spread reads as smudge. */
+.poster {
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out);
+}
+.posterLoaded { opacity: 1; }
+
 .card:hover .art,
 .card:focus-visible .art {
-  box-shadow:
-    0 18px 36px -12px color-mix(in srgb, var(--art) calc(var(--glow-strength) * 190%), transparent),
-    0 0 0 1px color-mix(in srgb, var(--art) 45%, transparent);
+  box-shadow: 0 0 0 1px var(--primary), var(--shadow-2);
 }
 
 .placeholder {
@@ -75,10 +82,8 @@
   font-family: var(--font-display);
   font-size: clamp(28px, 22cqw, 52px);
   font-weight: 800;
-  color: var(--text-faint);
-  background: linear-gradient(150deg,
-    color-mix(in srgb, var(--art) 22%, var(--surface-2)),
-    var(--surface-2));
+  color: rgba(255, 255, 255, 0.85);
+  background: var(--fallback, var(--card-fallback-1));
 }
 
 /* ── Hover actions ───────────────────────────────────────────────────────── */
@@ -90,9 +95,7 @@
   gap: var(--space-2);
   padding: var(--space-3);
   opacity: 0;
-  background: linear-gradient(to top,
-    color-mix(in srgb, var(--art) 45%, rgba(0, 0, 0, 0.82)) 0%,
-    transparent 62%);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82) 0%, transparent 62%);
   transition: opacity var(--dur) var(--ease-out);
 }
 .card:hover .scrim,
@@ -119,7 +122,7 @@
   color: #111;
   padding-left: 2px;   /* optically centres the triangle */
 }
-.play:hover { background: var(--art); color: var(--on-cyan); }
+.play:hover { background: var(--primary); color: var(--on-primary); }
 
 .fav {
   background: rgba(255, 255, 255, 0.16);
@@ -130,7 +133,7 @@
   transition-delay: 40ms;
 }
 .fav:hover  { background: rgba(255, 255, 255, 0.28); }
-.favOn      { color: var(--amber); }
+.favOn      { color: var(--favorite); }
 
 .card:hover .play, .card:hover .fav,
 .card:focus-visible .play, .card:focus-visible .fav { transform: translateY(0); }
@@ -171,14 +174,15 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Watched is a completed state, not an accent — it stays semantic green
-   rather than borrowing the artwork color, which would make "watched" mean a
-   different color on every title. */
+/* Both badges resolve to the single app accent, matching Jellyfin's
+   countIndicator/playedIndicator (both --jf-palette-primary-main). Watched
+   still gets its own semantic colour — completion is a different kind of
+   state from "here's a count" or "here's the accent". */
 .playedBadge { background: var(--success); color: var(--on-success); }
 
 .countBadge {
-  background: var(--amber);
-  color: var(--on-amber);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 /* ── Progress ────────────────────────────────────────────────────────────── */
@@ -193,7 +197,7 @@
 
 .progressFill {
   height: 100%;
-  background: linear-gradient(90deg, var(--art), color-mix(in srgb, var(--art) 35%, #fff));
+  background: var(--primary);
 }
 
 /* ── Text ────────────────────────────────────────────────────────────────── */
@@ -220,10 +224,7 @@
   font-variant-numeric: tabular-nums;
   transition: color var(--dur-fast) var(--ease-out);
 }
-/* Mixed toward the text colour rather than raw --art: the artwork colours are
-   tuned to sit on a dark ground and several fall below 4.5:1 as text on the
-   light theme. */
-.card:hover .meta { color: color-mix(in srgb, var(--art) 55%, var(--text)); }
+.card:hover .meta { color: var(--primary); }
 
 /* ── Skeleton ────────────────────────────────────────────────────────────── */
 .skeleton { pointer-events: none; }
@@ -257,8 +258,8 @@
 
 /* ── Motion preference ───────────────────────────────────────────────────── */
 /* The global backstop only shortens durations. The lift and the action-button
-   slide are position changes, so they're removed outright — the glow and scrim
-   still carry the hover state. */
+   slide are position changes, so they're removed outright — the ring and
+   scrim still carry the hover state. */
 @media (prefers-reduced-motion: reduce) {
   .card:hover { transform: none; }
   .play, .fav { transform: none; }

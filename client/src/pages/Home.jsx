@@ -209,7 +209,7 @@ function NextUpCard({ item }) {
         type: 'series',
         title: item.series_title,
         poster_url: item.poster_url,
-        dominant_color: item.dominant_color,
+        blurhash: item.blurhash,
         duration_secs: item.duration_secs,
         position_secs: item.position_secs,
         // Surfaced as the card's metadata line in place of a year.
