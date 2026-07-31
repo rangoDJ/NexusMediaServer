@@ -32,6 +32,13 @@ function titleFor(pathname) {
   return TITLES.find(([re]) => re.test(pathname))?.[1] ?? ''
 }
 
+const IconMenu = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+    <path d="M3 6h18M3 12h18M3 18h18" />
+  </svg>
+)
+
 /**
  * Contextual top bar.
  *
@@ -39,7 +46,7 @@ function titleFor(pathname) {
  * hairline once content scrolls under it. On immersive routes (detail pages)
  * it renders no title, so the page's own hero carries the heading.
  */
-export default function TopBar() {
+export default function TopBar({ onMenuClick }) {
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -97,6 +104,10 @@ export default function TopBar() {
 
   return (
     <header className={`${styles.bar} ${scrolled ? styles.scrolled : ''} ${immersive ? styles.immersive : ''}`}>
+      <button className={styles.menuBtn} onClick={onMenuClick} aria-label="Open menu">
+        <IconMenu />
+      </button>
+
       {title && <h1 className={styles.title}>{title}</h1>}
 
       <form className={styles.search} onSubmit={onSearchSubmit} role="search">

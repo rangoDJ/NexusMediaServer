@@ -15,7 +15,7 @@
 .stickyBar {
   position: fixed;
   top: var(--topbar-h);
-  left: var(--rail-w);
+  left: 0;
   right: 0;
   z-index: 40;
   height: 52px;
@@ -80,7 +80,7 @@
 .stickyPlay:hover { filter: brightness(1.1); }
 
 @media (max-width: 720px) {
-  .stickyBar { left: 0; padding: 0 var(--space-4); }
+  .stickyBar { padding: 0 var(--space-4); }
 }
 
 @media (prefers-reduced-motion: reduce) {

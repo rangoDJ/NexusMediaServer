@@ -1,0 +1,39 @@
+/* ============================================================================
+   GLOBAL BACKDROP
+   Matches jellyfin-web's backdrop.scss almost exactly: fixed, full-viewport,
+   z-index:-1, cover, no blur or dim overlay — Jellyfin's own backdrop ships
+   at full brightness (confirmed: no opacity/filter rule exists anywhere in
+   its stylesheets for .backdropContainer/.backdropImage). Foreground surfaces
+   (solid drawer, dense card rows) carry their own contrast instead.
+   ========================================================================== */
+.container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: -1;
+  contain: layout style size;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: cover;
+  contain: layout style;
+}
+
+.fadeIn {
+  animation: backdrop-fade-in 800ms ease-in normal both;
+}
+
+@keyframes backdrop-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fadeIn { animation: none; }
+}

@@ -5,103 +5,120 @@
    Nothing in this file targets a selector other than :root — it only declares
    custom properties. Components read tokens; they never hardcode values.
 
-   PALETTE CONCEPT — "film emulsion"
-   Color film is three stacked dye layers: cyan, magenta, yellow. Those are the
-   three accents, laid over a blue-violet ink ground descended from the app's
-   original #0f0f13 so it still reads as Nexus. Each accent owns a role and
-   they never compete:
-       cyan     navigation, focus, selection, links
-       magenta  playback, progress, resume
-       amber    filters, favorites, attention
+   PALETTE — Jellyfin Web parity
+   Matches jellyfin-web's actual theme source (src/themes/_base/_palette.scss,
+   confirmed against the real repo, not guessed): a neutral near-black ground
+   (#101010 / #202020, no color bias) with exactly ONE accent — #00a4dc — used
+   for every interactive/focus/selected/progress state. Jellyfin does not run
+   a multi-accent system: --cyan/--magenta/--amber below are the same names
+   the rest of the app already references (nav, playback, filters), kept only
+   so those call sites didn't all need editing in one pass — they resolve to
+   the single --primary value, not three different hues. Retire them to
+   --primary directly as each page gets touched.
 
-   AMBIENT COLOR
-   The real accent is --art: a per-item color extracted from the artwork
-   (populated in phase 02, consumed by the card in phase 03). It falls back to
-   cyan wherever no artwork color exists, so it is always safe to reference.
+   NO AMBIENT PER-ITEM COLOR
+   Nexus previously extracted a dominant color per poster (--art) and tinted
+   each card individually. Jellyfin has no equivalent — cards use a blurhash
+   placeholder while the real poster loads, and when there's no artwork at
+   all they fall back to one of 5 fixed palette colors, cycled by item id
+   (--card-fallback-1..5 below, straight from Jellyfin's dark/light themes).
+   --art is kept defined (= --primary) only so nothing referencing it errors
+   out before every call site is migrated off it in the card/detail rewrite.
 
-   THEMING — read before changing
-   :root is DARK on purpose. The app has always been dark and no page has been
-   audited for a light ground yet, so keying the default off
-   `prefers-color-scheme` here would silently flip the whole app to an untested
-   theme for anyone whose OS is set to light. Light is therefore opt-in via
-   :root[data-theme="light"] until phase 06, which audits every page and then
-   promotes light to a real OS-preference default.
+   THEMING
+   Both Jellyfin themes share the same --primary — it is not retinted for
+   light the way Nexus's old CMY accents were, since #00a4dc already holds
+   sufficient contrast against both a near-black and a near-white ground.
+   :root is dark by default; [data-theme="light"] opts in.
 
    LEGACY ALIASES
-   The bottom block maps the old variable names onto the new scale. That is what
-   lets 15 existing CSS modules pick up this palette without being touched. They
-   get retired page by page as later phases rewrite each module.
+   The bottom block maps pre-overhaul variable names onto this scale so old
+   CSS modules keep working unedited. Retire an alias once nothing references
+   it — grep -rn -- "--accent" client/src.
    ========================================================================== */
 
 :root {
   /* ── Ground ──────────────────────────────────────────────────────────── */
-  --surface-0: #0A0912;   /* page background                                */
-  --surface-1: #121020;   /* cards, panels, nav                             */
-  --surface-2: #1B1830;   /* inputs, raised wells                           */
-  --surface-3: #241F3E;   /* hover / active fills                           */
+  /* Jellyfin's actual background-default/background-paper — flat neutral
+     grey, deliberately with no hue bias (Nexus's previous ground leaned
+     blue-violet; Jellyfin's does not). */
+  --surface-0: #101010;   /* page background                                */
+  --surface-1: #202020;   /* cards, panels, nav, drawer                     */
+  --surface-2: #2a2a2a;   /* inputs, raised wells                           */
+  --surface-3: #383838;   /* hover / active fills                           */
 
-  --line:      #2C2648;   /* borders, dividers                              */
-  --line-soft: #211C3A;   /* hairlines inside a panel                       */
+  --line:      rgba(255, 255, 255, 0.12);   /* divider                     */
+  --line-soft: rgba(255, 255, 255, 0.08);   /* action-hover / hairlines    */
 
   /* ── Text ────────────────────────────────────────────────────────────── */
-  --text:       #EDEAF7;
-  --text-dim:   #9B94BE;  /* secondary copy, metadata                       */
-  --text-faint: #6B6490;  /* placeholders, disabled                         */
+  --text:       #ffffff;
+  --text-dim:   rgba(255, 255, 255, 0.7);   /* text-secondary              */
+  --text-faint: rgba(255, 255, 255, 0.5);   /* placeholders, disabled      */
 
-  /* ── Accents ─────────────────────────────────────────────────────────── */
-  --cyan:     #3DD9D6;
-  --cyan-hi:  #6FE8E5;    /* hover                                          */
-  --cyan-lo:  #1B6E6D;    /* subtle fills, tinted borders                   */
+  /* ── The one accent ──────────────────────────────────────────────────── */
+  --primary:    #00a4dc;
+  --primary-hi: #33b6e3;   /* primary-light — hover                       */
+  --primary-lo: #00729a;   /* primary-dark  — pressed / borders           */
+  --primary-hover-fill: rgba(0, 164, 220, 0.2);   /* selected-row wash    */
 
-  --magenta:    #F0409C;
-  --magenta-hi: #FF6BB5;
-  --magenta-lo: #7A2050;
-
-  --amber:    #FFB627;
-  --amber-hi: #FFC85C;
-  --amber-lo: #7A5410;
+  /* Every previously-separate accent now points at the same hue — see the
+     file header. Hi/lo mirror --primary so hover/pressed states still work
+     at every call site without being touched individually. */
+  --cyan:       var(--primary);
+  --cyan-hi:    var(--primary-hi);
+  --cyan-lo:    var(--primary-lo);
+  --magenta:    var(--primary);
+  --magenta-hi: var(--primary-hi);
+  --magenta-lo: var(--primary-lo);
+  --amber:      var(--primary);
+  --amber-hi:   var(--primary-hi);
+  --amber-lo:   var(--primary-lo);
 
   /* ── Semantic ────────────────────────────────────────────────────────── */
-  --success: #34D399;
-  --warning: var(--amber);
-  --danger:  #FF6B6B;
-  --info:    var(--cyan);
+  --success: #2e7d32;
+  --warning: #ed6c02;
+  --danger:  #c62828;   /* error-main                                     */
+  --danger-hi: #d15353; /* error-light                                    */
+  --danger-lo: #8a1c1c; /* error-dark                                     */
+  --info:    var(--primary);
+  /* Favorite hearts read as red in every Jellyfin-family client; there is
+     no dedicated theme token for it upstream, so this is a deliberate,
+     clearly-scoped choice rather than a discovered value. */
+  --favorite: var(--danger);
 
   /* ── Accent foregrounds ──────────────────────────────────────────────── */
-  /* Text/icon colour to use ON a filled accent. These have to flip with the
-     theme: on dark the accents are bright, so they take a dark ink; on light
-     the same accents are darkened to hold against white, so they need light
-     text. Hardcoding a dark ink (as the first pass did) silently failed
-     contrast on light — an amber chip measured 3.31:1. */
-  --on-cyan:    #06201F;
-  --on-magenta: #2A0716;
-  --on-amber:   #2A1A00;
-  --on-success: #04231A;
-  --on-danger:  #2A0A0A;
+  /* primary-contrastText in Jellyfin's theme is dark ink, unconditionally —
+     #00a4dc holds ~7.5:1 against black vs ~2.9:1 against white, so unlike
+     Nexus's old accents this does NOT need to flip between themes. */
+  --on-primary: rgba(0, 0, 0, 0.87);
+  --on-cyan:    var(--on-primary);
+  --on-magenta: var(--on-primary);
+  --on-amber:   var(--on-primary);
+  --on-success: #ffffff;
+  --on-danger:  #ffffff;
 
-  /* ── Ambient (per-item artwork color) ────────────────────────────────── */
-  /* Components set --art locally; this is the library-wide fallback. */
-  --art: var(--cyan);
-  /* Multiplier for ambient glow intensity — dialed back on light grounds
-     where a wide colored shadow reads as smudge rather than light. */
+  /* ── Card fallback colors (no artwork at all) ───────────────────────── */
+  /* Jellyfin's literal defaultCardBackground1..5 for the dark theme, cycled
+     by item id. Not sampled from anything — just five fixed brand colors. */
+  --card-fallback-1: #00455c;
+  --card-fallback-2: #44bae1;
+  --card-fallback-3: #00a4db;
+  --card-fallback-4: #1c4c5c;
+  --card-fallback-5: #007ea8;
+
+  /* ── Ambient (legacy — see file header) ─────────────────────────────── */
+  --art: var(--primary);
   --glow-strength: 0.30;
 
   /* ── Type ────────────────────────────────────────────────────────────── */
-  /* Deliberately not Inter — it is the current face and the main reason the
-     UI reads as generic. system-ui resolves to Segoe UI / SF Pro / Roboto,
-     ships nothing, and renders natively everywhere. */
   --font-display: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-ui:      system-ui, -apple-system, "Segoe UI", sans-serif;
-  /* Reading face for prose only — synopses, overviews. Applied selectively
-     on detail pages in phase 05, never globally. */
   --font-read:    ui-serif, Georgia, "Times New Roman", serif;
-  /* Media apps are mostly numbers. Runtimes, codecs, bitrates and timestamps
-     get their own voice, and tabular figures so columns align. */
   --font-mono:    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   --text-xs:   0.75rem;
   --text-sm:   0.8125rem;
-  --text-base: 0.875rem;   /* app baseline — matches the current 14px */
+  --text-base: 0.875rem;
   --text-md:   1rem;
   --text-lg:   1.125rem;
   --text-xl:   clamp(1.25rem, 2vw,  1.5rem);
@@ -114,10 +131,10 @@
   --leading-base:  1.5;
   --leading-loose: 1.65;
 
-  --tracking-tight: -0.025em;  /* display sizes */
+  --tracking-tight: -0.025em;
   --tracking-base:   0;
   --tracking-wide:   0.06em;
-  --tracking-caps:   0.14em;   /* uppercase mono labels */
+  --tracking-caps:   0.14em;
 
   /* ── Space — 4px base ────────────────────────────────────────────────── */
   --space-1: 0.25rem;
@@ -151,56 +168,41 @@
   --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.2);
 
   /* ── Layout ──────────────────────────────────────────────────────────── */
-  --rail-w:      64px;    /* collapsed icon rail (phase 01)                 */
-  --rail-w-open: 240px;   /* expanded on hover                             */
+  --drawer-w:    280px;
   --topbar-h:    56px;
   --content-max: 1800px;
 
   /* ── Focus ───────────────────────────────────────────────────────────── */
-  --focus-ring:   2px solid var(--cyan);
+  --focus-ring:   2px solid var(--primary);
   --focus-offset: 3px;
 }
 
 /* ============================================================================
-   LIGHT THEME — opt-in until phase 06
-   Not a naive inversion. The accents are darkened until they hold their own
-   against white (raw #3DD9D6 on white is ~1.6:1 and unreadable), and the
-   ground keeps a violet bias so it reads as the same product in a bright room.
+   LIGHT THEME
+   Matches jellyfin-web's light theme override: same --primary (see above for
+   why it doesn't need to change), neutral light ground, dark text.
    ========================================================================== */
 :root[data-theme="light"] {
-  --surface-0: #F7F5FB;
-  --surface-1: #FFFFFF;
-  --surface-2: #EFEBF7;
-  --surface-3: #E4DEF2;
+  --surface-0: #f2f2f2;
+  --surface-1: #e8e8e8;
+  --surface-2: #dcdcdc;
+  --surface-3: #cccccc;
 
-  --line:      #DED7EC;
-  --line-soft: #EAE4F5;
+  --line:      rgba(0, 0, 0, 0.14);
+  --line-soft: rgba(0, 0, 0, 0.08);
 
-  --text:       #16132A;
-  --text-dim:   #5D5580;
-  --text-faint: #857CA8;
+  --text:       #000000;
+  --text-dim:   rgba(0, 0, 0, 0.87);
+  --text-faint: rgba(0, 0, 0, 0.6);
 
-  --cyan:     #0E8F8C;
-  --cyan-hi:  #0B7371;
-  --cyan-lo:  #C7EFEE;
+  --success: #2e7d32;
+  --danger:  #c62828;
 
-  --magenta:    #C81E75;
-  --magenta-hi: #A5165F;
-  --magenta-lo: #FBD8E9;
-
-  --amber:    #9C6100;
-  --amber-hi: #7D4E00;
-  --amber-lo: #FCEBC8;
-
-  --success: #047857;
-  --danger:  #C42B2B;
-
-  /* Accents are dark on this ground, so their foregrounds invert. */
-  --on-cyan:    #FFFFFF;
-  --on-magenta: #FFFFFF;
-  --on-amber:   #FFFFFF;
-  --on-success: #FFFFFF;
-  --on-danger:  #FFFFFF;
+  --card-fallback-1: #009688;
+  --card-fallback-2: #d32f2f;
+  --card-fallback-3: #0288d1;
+  --card-fallback-4: #388e3c;
+  --card-fallback-5: #f57f17;
 
   --glow-strength: 0.10;
 
@@ -211,40 +213,28 @@
 }
 
 /* Explicit dark selector so the viewer's toggle can override a light default
-   in both directions once phase 06 wires prefers-color-scheme. */
+   in both directions. */
 :root[data-theme="dark"] {
-  --surface-0: #0A0912;
-  --surface-1: #121020;
-  --surface-2: #1B1830;
-  --surface-3: #241F3E;
+  --surface-0: #101010;
+  --surface-1: #202020;
+  --surface-2: #2a2a2a;
+  --surface-3: #383838;
 
-  --line:      #2C2648;
-  --line-soft: #211C3A;
+  --line:      rgba(255, 255, 255, 0.12);
+  --line-soft: rgba(255, 255, 255, 0.08);
 
-  --text:       #EDEAF7;
-  --text-dim:   #9B94BE;
-  --text-faint: #6B6490;
+  --text:       #ffffff;
+  --text-dim:   rgba(255, 255, 255, 0.7);
+  --text-faint: rgba(255, 255, 255, 0.5);
 
-  --cyan:     #3DD9D6;
-  --cyan-hi:  #6FE8E5;
-  --cyan-lo:  #1B6E6D;
+  --success: #2e7d32;
+  --danger:  #c62828;
 
-  --magenta:    #F0409C;
-  --magenta-hi: #FF6BB5;
-  --magenta-lo: #7A2050;
-
-  --amber:    #FFB627;
-  --amber-hi: #FFC85C;
-  --amber-lo: #7A5410;
-
-  --success: #34D399;
-  --danger:  #FF6B6B;
-
-  --on-cyan:    #06201F;
-  --on-magenta: #2A0716;
-  --on-amber:   #2A1A00;
-  --on-success: #04231A;
-  --on-danger:  #2A0A0A;
+  --card-fallback-1: #00455c;
+  --card-fallback-2: #44bae1;
+  --card-fallback-3: #00a4db;
+  --card-fallback-4: #1c4c5c;
+  --card-fallback-5: #007ea8;
 
   --glow-strength: 0.30;
 
@@ -258,13 +248,8 @@
    LEGACY ALIASES
    ----------------------------------------------------------------------------
    Every variable the pre-overhaul modules reference, remapped onto the scale
-   above. This is what lets the new palette reach all 15 modules without
-   editing them. Retire an alias only once no module references it —
+   above. Retire an alias only once no module references it —
        grep -rn -- "--accent" client/src
-   Three of these (--text-primary, --error, --border-hover) were never defined
-   at all; Libraries.module.css referenced them with hardcoded fallbacks
-   (#f1f1f1, #ef4444, #444) that bypassed theming entirely. Defining them here
-   pulls that page back onto the palette.
    ========================================================================== */
 :root {
   --bg:           var(--surface-0);
@@ -276,8 +261,8 @@
   --text-muted:   var(--text-dim);
   --text-primary: var(--text);
 
-  --accent:       var(--cyan);
-  --accent-hover: var(--cyan-hi);
+  --accent:       var(--primary);
+  --accent-hover: var(--primary-hi);
   --error:        var(--danger);
 
   --radius: var(--radius-md);

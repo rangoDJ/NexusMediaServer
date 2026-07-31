@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
+import { BackdropProvider } from './backdrop/BackdropContext.jsx'
 import { applyTheme, storedPreference } from './hooks/useTheme.js'
 import './index.css'
 
@@ -13,7 +14,9 @@ applyTheme(storedPreference())
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
-      <App />
+      <BackdropProvider>
+        <App />
+      </BackdropProvider>
     </BrowserRouter>
   </StrictMode>
 )
