@@ -1,8 +1,4 @@
 .page {
-  /* Set inline from media_items.dominant_color; this is the fallback for a
-     title whose poster yielded no usable hue. */
-  --art: var(--cyan);
-
   min-height: 100vh;
   background: var(--surface-0);
   display: flex;
@@ -27,8 +23,7 @@
   backdrop-filter: blur(16px) saturate(1.4);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
   border-bottom: 1px solid var(--line);
-  /* Tinted hairline ties the bar to this specific title. */
-  box-shadow: inset 0 -2px 0 -1px color-mix(in srgb, var(--art) 55%, transparent);
+  box-shadow: inset 0 -2px 0 -1px var(--line);
   transform: translateY(-120%);
   opacity: 0;
   transition: transform var(--dur) var(--ease-out), opacity var(--dur) var(--ease-out);
@@ -71,8 +66,8 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-full);
-  background: var(--art);
-  color: var(--on-cyan);
+  background: var(--primary);
+  color: var(--on-primary);
   font-weight: 600;
   font-size: var(--text-sm);
   flex: 0 0 auto;
@@ -97,55 +92,26 @@
   color: var(--text-muted);
 }
 
-/* ── Hero ──────────────────────────────────────────────────────────────── */
-.hero {
-  position: relative;
-  min-height: 480px;
-  display: flex;
-  flex-direction: column;
-}
-
+/* ── Backdrop ──────────────────────────────────────────────────────────── */
+/* Capped-height, fixed-attachment parallax layer — jellyfin-web's item-detail
+   backdrop, a separate and simpler mechanism from the session-persistent
+   global backdrop (see backdrop/BackdropContext.jsx). Shown at full
+   brightness: no blur, no dim wash. */
 .backdrop {
-  position: absolute;
-  inset: 0;
+  height: 40vh;
+  min-height: 320px;
   background-size: cover;
   background-position: center 20%;
-  filter: blur(6px) brightness(0.35);
-  transform: scale(1.04);
+  background-attachment: fixed;
 }
 
-/* The artwork color bled across the backdrop. soft-light lets the photo keep
-   its structure while taking on the hue, rather than being flooded by it.
-   Sits under .heroGradient, which is what actually guarantees text contrast —
-   this one is free to be purely atmospheric. */
-.heroWash {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(110% 130% at 80% 10%,
-      color-mix(in srgb, var(--art) 65%, transparent) 0%, transparent 60%),
-    radial-gradient(90% 110% at 10% 95%,
-      color-mix(in srgb, var(--art) 35%, transparent) 0%, transparent 62%);
-  mix-blend-mode: soft-light;
-}
-
-.heroGradient {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--surface-0) 25%, transparent) 0%,
-    color-mix(in srgb, var(--surface-0) 65%, transparent) 70%,
-    var(--surface-0) 100%
-  );
-}
-
-.heroInner {
+/* ── Ribbon: poster + dense info panel ────────────────────────────────── */
+.ribbon {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  padding: 20px 48px 40px;
+  background: var(--surface-0);
+  padding: 0 48px 40px;
+  /* Pulls the panel up so the poster overlaps the backdrop's bottom edge. */
+  margin-top: -120px;
 }
 
 .backBtn {
@@ -155,13 +121,12 @@
   font-size: 14px;
   cursor: pointer;
   padding: 0;
-  margin-bottom: 28px;
-  align-self: flex-start;
+  margin-bottom: 16px;
   transition: color 0.15s;
 }
 .backBtn:hover { color: var(--text); }
 
-.heroContent {
+.ribbonContent {
   display: flex;
   gap: 40px;
   align-items: flex-start;
@@ -173,11 +138,7 @@
   width: 200px;
   border-radius: var(--radius-lg);
   overflow: hidden;
-  /* Depth shadow plus a glow in the title's own color, so the poster reads as
-     lit by its artwork rather than pasted onto the backdrop. */
-  box-shadow:
-    var(--shadow-4),
-    0 12px 48px -12px color-mix(in srgb, var(--art) calc(var(--glow-strength) * 200%), transparent);
+  box-shadow: var(--shadow-4);
 }
 
 .poster {
@@ -267,47 +228,32 @@
 }
 
 /* ── Action row (play + favorite + fix match) ───────────────────────────── */
+/* Small, icon-only flat buttons — matches itemDetailPage's mainDetailButtons
+   row rather than a pair of large filled pills. */
 .actionRow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 6px;
-  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
 }
 
-.playBtn {
-  padding: 10px 28px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.favoriteBtn {
-  padding: 9px 16px;
-  font-size: 20px;
-  line-height: 1;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  border-radius: var(--radius);
+.iconBtn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text);
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
-.favoriteBtn:hover { background: var(--surface-2); color: var(--amber); border-color: var(--amber); }
-.favoriteBtnActive { color: var(--amber); border-color: var(--amber); }
-
-.rematchBtn {
-  padding: 9px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-}
-.rematchBtn:hover { background: var(--surface2); color: var(--text); }
+.iconBtn:hover { background: var(--surface-2); }
+.iconBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.iconBtnActive { color: var(--favorite); }
 
 /* ── Re-identification dialog ───────────────────────────────────────────── */
 .rematchOverlay {
@@ -468,7 +414,7 @@
 }
 .castCard:hover { transform: translateY(-2px); }
 .castCard:focus-visible {
-  outline: 2px solid var(--art);
+  outline: 2px solid var(--primary);
   outline-offset: 4px;
   border-radius: var(--radius-md);
 }
@@ -484,7 +430,7 @@
   transition: box-shadow var(--dur-fast) var(--ease-out);
 }
 .castCard:hover .castPhoto {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--art) 70%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 70%, transparent);
 }
 
 .castPhotoPlaceholder {
@@ -580,10 +526,10 @@
 }
 .episodeRow:hover {
   background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--art);
+  box-shadow: inset 2px 0 0 var(--primary);
 }
 .episodeRow:focus-visible {
-  outline: 2px solid var(--art);
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
@@ -621,7 +567,7 @@
   align-items: center;
   justify-content: center;
   color: #fff;
-  background: color-mix(in srgb, var(--art) 40%, rgba(0, 0, 0, 0.55));
+  background: color-mix(in srgb, var(--primary) 40%, rgba(0, 0, 0, 0.55));
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease-out);
 }
@@ -638,8 +584,8 @@
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-wide);
   /* Mixed toward the text colour so it stays readable on both grounds —
-     raw --art is tuned for a dark background. */
-  color: color-mix(in srgb, var(--art) 55%, var(--text));
+     raw --primary is tuned for a dark background. */
+  color: color-mix(in srgb, var(--primary) 55%, var(--text));
   margin-bottom: 2px;
 }
 

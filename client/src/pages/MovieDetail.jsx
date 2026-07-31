@@ -152,14 +152,7 @@ export default function MovieDetail() {
 
   return (
   <>
-    {/* --art carries this title's own artwork color to every tinted surface on
-        the page: the hero wash, the poster glow, the section rules and the
-        episode progress bars. Unset when the poster yielded no usable color,
-        so the stylesheet's cyan default applies. */}
-    <div
-      className={styles.page}
-      style={item.dominant_color ? { '--art': item.dominant_color } : undefined}
-    >
+    <div className={styles.page}>
       {/* Takes over once the hero scrolls out of view, keeping the title and
           Play reachable on a long series page. */}
       <div className={`${styles.stickyBar} ${heroGone ? styles.stickyOn : ''}`}>
@@ -183,86 +176,105 @@ export default function MovieDetail() {
         )}
       </div>
 
-      {/* ── Hero with blurred backdrop ─────────────────────────────────── */}
-      <div className={styles.hero}>
-        {item.backdrop_url && (
-          <div
-            className={styles.backdrop}
-            style={{ backgroundImage: `url(${item.backdrop_url})` }}
-          />
-        )}
-        <div className={styles.heroWash} aria-hidden="true" />
-        <div className={styles.heroGradient} />
+      {/* ── Backdrop ──────────────────────────────────────────────────────
+          A local, capped-height (40vh), fixed-attachment parallax layer —
+          jellyfin-web's itemDetailPage backdrop, which is a separate, simpler
+          mechanism from the session-persistent global backdrop (see
+          backdrop/BackdropContext.jsx, used while browsing Home/libraries).
+          No blur or dim wash: the image is shown at full brightness, same as
+          the reference implementation. */}
+      {item.backdrop_url && (
+        <div className={styles.backdrop} style={{ backgroundImage: `url(${item.backdrop_url})` }} />
+      )}
 
-        <div className={styles.heroInner}>
-          <button className={styles.backBtn} onClick={() => navigate(-1)}>
-            &#8592; Back
-          </button>
+      {/* ── Ribbon: poster + dense info panel ───────────────────────────── */}
+      <div className={styles.ribbon}>
+        <button className={styles.backBtn} onClick={() => navigate(-1)}>
+          &#8592; Back
+        </button>
 
-          <div className={styles.heroContent}>
-            {/* Poster */}
-            <div className={styles.posterWrap}>
-              {item.poster_url
-                ? <img className={styles.poster} src={item.poster_url} alt={item.title} />
-                : <div className={styles.posterPlaceholder}>{item.title[0]}</div>
-              }
+        <div className={styles.ribbonContent}>
+          {/* Poster */}
+          <div className={styles.posterWrap}>
+            {item.poster_url
+              ? <img className={styles.poster} src={item.poster_url} alt={item.title} />
+              : <div className={styles.posterPlaceholder}>{item.title[0]}</div>
+            }
+          </div>
+
+          {/* Info */}
+          <div className={styles.info}>
+            <h1 className={styles.title}>{item.title}</h1>
+            {meta.tagline && <p className={styles.tagline}>{meta.tagline}</p>}
+
+            <div className={styles.metaRow}>
+              {item.year      && <span>{item.year}</span>}
+              {item.type === 'series' && seasons.length > 0 && (
+                <span>{seasons.length} {seasons.length === 1 ? 'Season' : 'Seasons'}</span>
+              )}
+              {item.type !== 'series' && item.duration_secs && <span>{fmt(item.duration_secs)}</span>}
+              {item.rating    && (
+                <span className={styles.rating}>★ {Number(item.rating).toFixed(1)}</span>
+              )}
             </div>
 
-            {/* Info */}
-            <div className={styles.info}>
-              <h1 className={styles.title}>{item.title}</h1>
-              {meta.tagline && <p className={styles.tagline}>{meta.tagline}</p>}
-
-              <div className={styles.metaRow}>
-                {item.year      && <span>{item.year}</span>}
-                {item.type === 'series' && seasons.length > 0 && (
-                  <span>{seasons.length} {seasons.length === 1 ? 'Season' : 'Seasons'}</span>
-                )}
-                {item.type !== 'series' && item.duration_secs && <span>{fmt(item.duration_secs)}</span>}
-                {item.rating    && (
-                  <span className={styles.rating}>★ {Number(item.rating).toFixed(1)}</span>
-                )}
-              </div>
-
-              {item.plot && <p className={styles.plot}>{item.plot}</p>}
-
-              <table className={styles.metaTable}>
-                <tbody>
-                  {genres?.length   > 0 && <MetaRow label="Genres"   value={genres.join(', ')} />}
-                  {director          && <MetaRow label="Director" value={director} />}
-                  {writer            && <MetaRow label="Writer"   value={writer} />}
-                  {studios?.length  > 0 && <MetaRow label="Studios"  value={studios.join(', ')} />}
-                  {item.video_codec  && <MetaRow label="Video"    value={[item.video_codec?.toUpperCase(), item.width && item.height ? `${item.width}×${item.height}` : null].filter(Boolean).join(' · ')} />}
-                  {item.audio_codec  && <MetaRow label="Audio"    value={item.audio_codec?.toUpperCase()} />}
-                </tbody>
-              </table>
-
-              <div className={styles.actionRow}>
-                {item.type !== 'series' && (
-                  <button
-                    className={`primary ${styles.playBtn}`}
-                    onClick={() => setPlaying({ mediaItemId: item.id, title: item.title })}
-                  >
-                    ▶ Play
-                  </button>
-                )}
+            {/* ── Action buttons ─────────────────────────────────────────
+                Small, icon-only flat buttons — matches itemDetailPage's
+                mainDetailButtons row, rather than a pair of large filled
+                pills. Each carries a title/aria-label since the icon alone
+                isn't enough of a label. */}
+            <div className={styles.actionRow}>
+              {item.type !== 'series' && (
                 <button
-                  className={`${styles.favoriteBtn} ${isFavorite ? styles.favoriteBtnActive : ''}`}
-                  onClick={toggleFavorite}
-                  title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                  className={styles.iconBtn}
+                  onClick={() => setPlaying({ mediaItemId: item.id, title: item.title })}
+                  title="Play"
+                  aria-label="Play"
                 >
-                  {isFavorite ? '★' : '☆'}
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5.5v13l11-6.5z" />
+                  </svg>
                 </button>
-                {user.role === 'admin' && (
-                  <button
-                    className={styles.rematchBtn}
-                    onClick={() => setShowRematch(true)}
-                  >
-                    Fix Match
-                  </button>
-                )}
-              </div>
+              )}
+              <button
+                className={`${styles.iconBtn} ${isFavorite ? styles.iconBtnActive : ''}`}
+                onClick={toggleFavorite}
+                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                aria-pressed={isFavorite}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill={isFavorite ? 'currentColor' : 'none'}
+                     stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M12 20.5s-7.5-4.6-10-9.4C.5 7.6 2.4 4.5 5.7 4c2-.3 3.9.7 6.3 3.1C14.4 4.7 16.3 3.7 18.3 4c3.3.5 5.2 3.6 3.7 7.1-2.5 4.8-10 9.4-10 9.4z" />
+                </svg>
+              </button>
+              {user.role === 'admin' && (
+                <button
+                  className={styles.iconBtn}
+                  onClick={() => setShowRematch(true)}
+                  title="Fix Match"
+                  aria-label="Fix Match"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                  </svg>
+                </button>
+              )}
             </div>
+
+            {item.plot && <p className={styles.plot}>{item.plot}</p>}
+
+            <table className={styles.metaTable}>
+              <tbody>
+                {genres?.length   > 0 && <MetaRow label="Genres"   value={genres.join(', ')} />}
+                {director          && <MetaRow label="Director" value={director} />}
+                {writer            && <MetaRow label="Writer"   value={writer} />}
+                {studios?.length  > 0 && <MetaRow label="Studios"  value={studios.join(', ')} />}
+                {item.video_codec  && <MetaRow label="Video"    value={[item.video_codec?.toUpperCase(), item.width && item.height ? `${item.width}×${item.height}` : null].filter(Boolean).join(' · ')} />}
+                {item.audio_codec  && <MetaRow label="Audio"    value={item.audio_codec?.toUpperCase()} />}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
