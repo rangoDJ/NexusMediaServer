@@ -16,7 +16,21 @@
   font-weight: 700;
   letter-spacing: var(--tracking-tight);
   margin: 0;
+  color: inherit;
 }
+
+.titleLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text);
+}
+.titleLink svg {
+  color: var(--text-faint);
+  transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.titleLink:hover .title { color: var(--primary); }
+.titleLink:hover svg { color: var(--primary); transform: translateX(2px); }
 
 /* Names what the row is rather than repeating the title — "recently added",
    "in progress". Mono keeps it clearly subordinate to the heading. */

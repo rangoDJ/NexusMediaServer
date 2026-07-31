@@ -1,27 +1,48 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.js'
 import MediaCard, { MediaCardSkeleton } from '../components/MediaCard.jsx'
 import Row from '../components/Row.jsx'
-import Spotlight from '../components/Spotlight.jsx'
 import styles from './Home.module.css'
 
-const POPULAR_GENRES = ['Action', 'Comedy', 'Drama', 'Sci-Fi', 'Horror', 'Thriller', 'Animation', 'Documentary']
-const SPOTLIGHT_COUNT = 5
+// Library types jellyfin-web's own recentlyAdded.ts excludes from "Latest"
+// rows — playlists/boxsets/channels aren't browsable content shelves the way
+// a movie or series library is, and 'folders' is a raw-filesystem view with
+// no consistent item shape to card-ify. Nexus's library types are currently
+// just movies/series/tv (see routes/libraries.js), so this is a no-op today
+// — kept so a future library type doesn't silently need to rediscover this.
+const EXCLUDED_LATEST_TYPES = new Set(['playlists', 'boxsets', 'channels', 'folders'])
 
 function pad(n) { return String(n).padStart(2, '0') }
 
+/**
+ * Home.
+ *
+ * Stacked, largely-fixed sections rather than a hero banner — matching
+ * jellyfin-web's actual home screen (components/homesections/homesections.js),
+ * which has NO spotlight/carousel by default. Default section order there is
+ * library tiles, Resume, next-up, then one "Latest from [Library]" row per
+ * library (recentlyAdded.ts genuinely renders one row per view, not a single
+ * merged row) — reproduced here, minus the audio/book/live-tv resume rows
+ * Nexus has no equivalent content for.
+ *
+ * Jellyfin's own home sections are also user-configurable (up to 10
+ * reorderable slots, homesection0..9). That per-user ordering UI is out of
+ * scope here — this ships Jellyfin's own *default* order as a fixed one.
+ *
+ * Favorites is a separate TAB in Jellyfin, not a home section (see
+ * hometab.js's getTabs()) — reflected here as a `?favorites=1` view that
+ * replaces the sections entirely rather than being one more row among them.
+ */
 export default function Home() {
+  const [searchParams] = useSearchParams()
+  const showFavorites = searchParams.get('favorites') === '1'
+
   const [libraries, setLibraries]             = useState([])
-  const [spotlight, setSpotlight]             = useState([])
   const [continueWatching, setContinueWatching] = useState([])
   const [nextUp, setNextUp]                   = useState([])
-  const [favorites, setFavorites]             = useState([])
   const [recentByLibrary, setRecentByLibrary] = useState({})
-  const [genres, setGenres]                   = useState([])
-  const [activeGenre, setActiveGenre]         = useState(null)
-  const [genreItems, setGenreItems]           = useState([])
-  const [genreLoading, setGenreLoading]       = useState(false)
+  const [favorites, setFavorites]             = useState([])
   const [loading, setLoading]                 = useState(true)
   const navigate = useNavigate()
   const user = JSON.parse(localStorage.getItem('nexus_user') || '{}')
@@ -31,33 +52,23 @@ export default function Home() {
 
     async function load() {
       try {
-        const [libsRes, cwRes, genresRes, nextUpRes, favRes, spotRes] = await Promise.all([
+        const [libsRes, cwRes, nextUpRes, favRes] = await Promise.all([
           api.get('/libraries').catch(() => ({ data: [] })),
           api.get('/media/continue-watching').catch(() => ({ data: [] })),
-          api.get('/media/genres').catch(() => ({ data: [] })),
           api.get('/media/next-up').catch(() => ({ data: [] })),
           api.get('/media/favorites').catch(() => ({ data: [] })),
-          // Highest-rated titles make the most defensible "featured" set
-          // without a curation concept in the schema.
-          api.get('/media', { params: { sort: 'rating', limit: SPOTLIGHT_COUNT } })
-             .catch(() => ({ data: [] })),
         ])
         if (cancelled) return
 
-        const libs = libsRes.data
+        const libs = libsRes.data.filter(l => !EXCLUDED_LATEST_TYPES.has(l.type))
         setLibraries(libs)
         setContinueWatching(cwRes.data)
         setNextUp(nextUpRes.data)
         setFavorites(favRes.data)
-        setSpotlight(spotRes.data.filter(i => i.backdrop_url || i.poster_url))
-        setGenres(POPULAR_GENRES.filter(g => genresRes.data.includes(g)).slice(0, 8))
 
-        // One "recently added" row per library. The old page also rendered a
-        // "random picks" row per library and a row per genre, which is how it
-        // ended up with ten interchangeable strips; genres are a filter now.
         const results = await Promise.all(
           libs.map(lib =>
-            api.get('/media', { params: { library_id: lib.id, sort: 'recently_added', limit: 20 } })
+            api.get('/media', { params: { library_id: lib.id, sort: 'recently_added', limit: 16 } })
                .then(r => ({ libId: lib.id, data: r.data }))
                .catch(() => ({ libId: lib.id, data: [] }))
           )
@@ -72,18 +83,6 @@ export default function Home() {
     load()
     return () => { cancelled = true }
   }, [])
-
-  // Genre selection filters in place rather than adding another permanent row.
-  useEffect(() => {
-    if (!activeGenre) { setGenreItems([]); return }
-    let cancelled = false
-    setGenreLoading(true)
-    api.get('/media', { params: { genre: activeGenre, sort: 'rating', limit: 40 } })
-      .then(r => { if (!cancelled) setGenreItems(r.data) })
-      .catch(() => { if (!cancelled) setGenreItems([]) })
-      .finally(() => { if (!cancelled) setGenreLoading(false) })
-    return () => { cancelled = true }
-  }, [activeGenre])
 
   const isEmpty = useMemo(
     () => !loading && !libraries.some(lib => recentByLibrary[lib.id]?.length),
@@ -107,93 +106,57 @@ export default function Home() {
     )
   }
 
+  if (showFavorites) {
+    return (
+      <main className={styles.main}>
+        {favorites.length > 0 ? (
+          <div className={styles.grid}>
+            {favorites.map(item => <MediaCard key={item.id} item={item} />)}
+          </div>
+        ) : (
+          <div className={styles.empty}><p>No favorites yet.</p></div>
+        )}
+      </main>
+    )
+  }
+
   return (
     <main className={styles.main}>
-      <Spotlight items={spotlight} />
-
-      {genres.length > 0 && (
-        <div className={styles.chips} role="group" aria-label="Filter by genre">
-          <button
-            className={`${styles.chip} ${!activeGenre ? styles.chipOn : ''}`}
-            onClick={() => setActiveGenre(null)}
-            aria-pressed={!activeGenre}
-          >
-            All
-          </button>
-          {genres.map(g => (
-            <button
-              key={g}
-              className={`${styles.chip} ${activeGenre === g ? styles.chipOn : ''}`}
-              onClick={() => setActiveGenre(activeGenre === g ? null : g)}
-              aria-pressed={activeGenre === g}
-            >
-              {g}
-            </button>
+      {continueWatching.length > 0 && (
+        <Row title="Continue Watching" eyebrow="in progress">
+          {continueWatching.map(item => (
+            <MediaCard key={item.id} item={item} showProgress variant="wide" className={styles.slotWide} />
           ))}
-        </div>
-      )}
-
-      {/* A genre selection replaces the rows rather than sitting above them —
-          the point of filtering is to narrow what's on screen. */}
-      {activeGenre ? (
-        <Row title={activeGenre} eyebrow={`${genreItems.length} titles`}>
-          {genreLoading
-            ? Array.from({ length: 8 }).map((_, i) => (
-                <MediaCardSkeleton key={i} className={styles.slot} />
-              ))
-            : genreItems.map(item => (
-                <MediaCard key={item.id} item={item} className={styles.slot} />
-              ))
-          }
         </Row>
-      ) : (
-        <>
-          {continueWatching.length > 0 && (
-            <Row title="Continue Watching" eyebrow="in progress">
-              {continueWatching.map(item => (
-                <MediaCard key={item.id} item={item} showProgress variant="wide" className={styles.slotWide} />
-              ))}
-            </Row>
-          )}
-
-          {nextUp.length > 0 && (
-            <Row title="Next Up" eyebrow="new episodes">
-              {nextUp.map(item => <NextUpCard key={item.episode_id} item={item} />)}
-            </Row>
-          )}
-
-          {favorites.length > 0 && (
-            <Row title="My Favorites" eyebrow="starred">
-              {favorites.map(item => (
-                <MediaCard key={item.id} item={item} className={styles.slot} />
-              ))}
-            </Row>
-          )}
-
-          {libraries.map(lib => {
-            const recent = recentByLibrary[lib.id]
-            if (!recent?.length) return null
-            return (
-              <Row key={lib.id} title={lib.name} eyebrow="recently added">
-                {recent.map(item => (
-                  <MediaCard key={item.id} item={item} className={styles.slot} />
-                ))}
-              </Row>
-            )
-          })}
-        </>
       )}
+
+      {nextUp.length > 0 && (
+        <Row title="Next Up" eyebrow="new episodes">
+          {nextUp.map(item => <NextUpCard key={item.episode_id} item={item} />)}
+        </Row>
+      )}
+
+      {libraries.map(lib => {
+        const recent = recentByLibrary[lib.id]
+        if (!recent?.length) return null
+        return (
+          <Row key={lib.id} title={`Latest ${lib.name}`} linkTo={`/library/${lib.id}`}>
+            {recent.map(item => (
+              <MediaCard key={item.id} item={item} className={styles.slot} />
+            ))}
+          </Row>
+        )
+      })}
     </main>
   )
 }
 
 /**
  * An episode in progress. Uses the wide card's shape but carries episode
- * numbering and its series' artwork color, since episodes have no artwork of
- * their own (see migration 024).
+ * numbering and its series' blurhash, since episodes have no artwork of
+ * their own (see migration 024/025).
  */
 function NextUpCard({ item }) {
-  const navigate = useNavigate()
   const pct = item.duration_secs > 0
     ? Math.min(100, Math.round((item.position_secs / item.duration_secs) * 100))
     : 0
@@ -222,7 +185,6 @@ function NextUpCard({ item }) {
 function SkeletonHome() {
   return (
     <main className={styles.main}>
-      <div className={styles.spotlightSkeleton} />
       {[0, 1, 2].map(i => (
         <section key={i} className={styles.skelRow}>
           <div className={styles.skelTitle} />

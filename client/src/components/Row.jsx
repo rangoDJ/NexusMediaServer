@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import styles from './Row.module.css'
 
 /**
@@ -13,7 +14,7 @@ import styles from './Row.module.css'
  * so a row that fits its container looks flat instead of pretending to
  * overflow.
  */
-export default function Row({ title, eyebrow, children, className = '' }) {
+export default function Row({ title, eyebrow, linkTo, children, className = '' }) {
   const scrollerRef = useRef(null)
   const [atStart, setAtStart] = useState(true)
   const [atEnd, setAtEnd] = useState(true)
@@ -84,7 +85,20 @@ export default function Row({ title, eyebrow, children, className = '' }) {
   return (
     <section className={`${styles.row} ${className}`}>
       <div className={styles.head}>
-        <h2 className={styles.title}>{title}</h2>
+        {/* Matches jellyfin-web's "Latest from [Library]" row heading, which
+            is itself a link to that library — a chevron rather than a whole
+            separate "View all" control. */}
+        {linkTo ? (
+          <Link to={linkTo} className={styles.titleLink}>
+            <h2 className={styles.title}>{title}</h2>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m9 5 7 7-7 7" />
+            </svg>
+          </Link>
+        ) : (
+          <h2 className={styles.title}>{title}</h2>
+        )}
         {eyebrow && <span className={styles.eyebrow}>{eyebrow}</span>}
       </div>
 
