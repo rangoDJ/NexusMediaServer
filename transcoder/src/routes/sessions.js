@@ -4,6 +4,13 @@ import { join, resolve } from 'path'
 import { sessionStore } from '../services/sessionStore.js'
 import { startTranscodeSession, stopSession, touchSession, getSessionLogPath } from '../services/transcoder.js'
 
+// Local ceiling on concurrent ffmpeg sessions held by this node. The API's
+// transcoderPool already enforces per-node max_sessions before routing, but
+// this is a second line of defense: if a node is ever routed directly or a
+// pool check races, refusing here beats running N+1 ffmpeg encoders and
+// starving the box.
+const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS ?? '16', 10)
+
 export default async function sessionRoutes(app) {
   // Create a new transcode session
   app.post('/', async (request, reply) => {
@@ -11,6 +18,10 @@ export default async function sessionRoutes(app) {
 
     if (!existsSync(file_path)) {
       return reply.code(404).send({ error: 'File not found on transcoder' })
+    }
+
+    if (sessionStore.size >= (Number.isFinite(MAX_SESSIONS) ? MAX_SESSIONS : 16)) {
+      return reply.code(503).send({ error: 'Transcoder at capacity; try again shortly' })
     }
 
     const session_id = uuidv4()

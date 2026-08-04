@@ -42,6 +42,9 @@ export class DirectoryWatcher {
     this.pollIntervalMs = 30_000
     /** master enable flag */
     this.enabled     = true
+    /** in-process set of library ids currently scanning — guards against two
+     *  scans firing in the window before scanLibrary persists scan_status. */
+    this.scanning    = new Set()
   }
 
   /** Read settings and (re)build watchers for every library. */
@@ -77,7 +80,10 @@ export class DirectoryWatcher {
   async refreshLibrary(libraryId) {
     if (!this.enabled) return
     const { rows } = await this.db.query('SELECT * FROM libraries WHERE id=$1', [libraryId])
-    this.#removeLibrary(libraryId)
+    // Await the old watcher's close BEFORE adding a new one — otherwise two
+    // chokidar instances briefly observe the same paths and double-fire
+    // events (duplicate dirty marks / scans).
+    await this.#removeLibrary(libraryId)
     if (rows[0]) {
       const settings = await getSettings(this.db).catch(() => ({}))
       const usePolling = settings['watcher.use_polling'] !== false
@@ -159,9 +165,9 @@ export class DirectoryWatcher {
     this.log.info(`[watcher] watching "${library.name}" → ${library.paths.join(', ')}`)
   }
 
-  #removeLibrary(libraryId) {
+  async #removeLibrary(libraryId) {
     const w = this.watchers.get(libraryId)
-    if (w) w.close().catch(() => {})
+    if (w) await w.close().catch(() => {})
     const t = this.timers.get(libraryId)
     if (t) clearTimeout(t)
     this.watchers.delete(libraryId)
@@ -180,7 +186,10 @@ export class DirectoryWatcher {
   async #triggerScan(libraryId) {
     this.timers.delete(libraryId)
     const library = this.libraries.get(libraryId)
-    if (!library) return
+    if (!library || this.scanning.has(libraryId)) {
+      if (library) this.#markDirty(libraryId) // in-flight — reschedule
+      return
+    }
 
     // Skip if a scan is already running — chokidar events arriving during
     // a scan will re-mark the library dirty and another scan will fire.
@@ -195,6 +204,7 @@ export class DirectoryWatcher {
     }
 
     this.log.info(`[watcher] "${library.name}" — change detected, starting scan`)
+    this.scanning.add(libraryId)
     try {
       // Pass `this` so pause()/resume() apply here too — the watcher briefly
       // closes and reopens its own watcher for this library around the scan
@@ -202,6 +212,8 @@ export class DirectoryWatcher {
       await scanLibrary(this.db, library, this.log, this.broadcaster, { watcher: this })
     } catch (err) {
       this.log.error({ err }, `[watcher] scan failed for "${library.name}"`)
+    } finally {
+      this.scanning.delete(libraryId)
     }
   }
 }

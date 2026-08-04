@@ -5,6 +5,10 @@ const IMAGE_BASE = 'https://image.tmdb.org/t/p'
 function client(apiKey) {
   return axios.create({
     baseURL: 'https://api.themoviedb.org/3',
+    // A hung upstream must never block a media scan / task forever — axing the
+    // default timeout:0 (no timeout) so slow TMDB responses fail cleanly and
+    // the scanner can fall back to NFO/local metadata.
+    timeout: 10_000,
     params: { api_key: apiKey, language: 'en' },
   })
 }

@@ -4,7 +4,7 @@ import { stat } from 'fs/promises'
 import { extname, dirname, join } from 'path'
 import { pickTranscoder } from '../services/transcoderPool.js'
 import { fetchMovieById, fetchSeriesById, searchTmdb } from '../services/tmdb.js'
-import { libraryFilterCondition, canAccessMediaItem, canAccessEpisode } from '../services/libraryAccess.js'
+import { libraryFilterCondition, canAccessMediaItem, canAccessEpisode, getAllowedLibraryIds, resolveWithinLibrary } from '../services/libraryAccess.js'
 
 // Codecs natively supported for direct play in common mobile/browser environments.
 // Mobile apps pass their own list via ?client_codecs= to get an accurate answer.
@@ -45,7 +45,7 @@ export default async function mediaRoutes(app) {
   // sort = alphabetical | recently_added | random | year_desc | rating
   app.get('/', async (request) => {
     const { library_id, type, search, genre, sort = 'alphabetical', page = 1 } = request.query
-    const limit  = Math.min(parseInt(request.query.limit ?? '50', 10) || 50, 200)
+    const limit  = Math.max(1, Math.min(parseInt(request.query.limit ?? '50', 10) || 50, 200))
     const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit
     const userId = request.user.sub
     const params = [userId]
@@ -104,10 +104,18 @@ export default async function mediaRoutes(app) {
   })
 
   // Aggregate item counts for the dashboard overview tile row.
-  app.get('/counts', async () => {
+  app.get('/counts', async (request) => {
+    const allowed = await getAllowedLibraryIds(app.db, request.user)
+    const itemsWhere = allowed === null ? '' : ' WHERE library_id = ANY($1)'
+    const episodeWhere = allowed === null ? '' : ' WHERE m.library_id = ANY($1)'
+    const params = allowed === null ? [] : [[...allowed]]
     const [{ rows: byType }, { rows: [{ count: episodes }] }] = await Promise.all([
-      app.db.query("SELECT type, COUNT(*)::int AS count FROM media_items GROUP BY type"),
-      app.db.query("SELECT COUNT(*)::int AS count FROM episodes"),
+      app.db.query(`SELECT type, COUNT(*)::int AS count FROM media_items${itemsWhere} GROUP BY type`, params),
+      app.db.query(
+        `SELECT COUNT(*)::int AS count FROM episodes e
+         JOIN media_items m ON m.id = e.series_id${episodeWhere}`,
+        params
+      ),
     ])
     const counts = { movies: 0, series: 0, episodes }
     for (const row of byType) {
@@ -120,12 +128,17 @@ export default async function mediaRoutes(app) {
   // Distinct genre list (for filter dropdowns)
   app.get('/genres', async (request) => {
     const { library_id } = request.query
+    const allowed = await getAllowedLibraryIds(app.db, request.user)
+    const conditions = []
     const params = []
-    let where = ''
-    if (library_id) { params.push(library_id); where = `WHERE library_id=$1` }
+    if (library_id) { params.push(library_id); conditions.push(`library_id=$${params.length}`) }
+    // Intersect with the caller's allowed library set so genre lists can't
+    // reveal the content of libraries the user was denied.
+    if (allowed !== null) { params.push([...allowed]); conditions.push(`library_id = ANY($${params.length})`) }
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''
     const { rows } = await app.db.query(
       `SELECT DISTINCT unnest(genres) AS genre
-       FROM media_items ${where}
+       FROM media_items${where}
        ORDER BY genre`,
       params
     )
@@ -248,14 +261,19 @@ export default async function mediaRoutes(app) {
   // Serve local poster / backdrop images stored alongside the media file.
   // PUBLIC route (config.public:true) — <img> tags can't send auth headers
   // and posters aren't sensitive content. Cached aggressively client-side.
+  // The file path is realpath()'d and must resolve INSIDE the item's library
+  // root — this blocks a symlink/tainted DB path turning the route into an
+  // arbitrary-file read.
   for (const kind of ['poster', 'backdrop']) {
     app.get(`/:id/${kind}`, { config: { public: true } }, async (request, reply) => {
       const { rows } = await app.db.query(
-        'SELECT metadata FROM media_items WHERE id=$1', [request.params.id]
+        'SELECT library_id, metadata FROM media_items WHERE id=$1', [request.params.id]
       )
       if (!rows.length) return reply.code(404).send({ error: 'Not found' })
-      const path = rows[0].metadata?.[`local_${kind}_path`]
-      if (!path) return reply.code(404).send({ error: `No local ${kind}` })
+      const stored = rows[0].metadata?.[`local_${kind}_path`]
+      if (!stored) return reply.code(404).send({ error: `No local ${kind}` })
+      const path = await resolveWithinLibrary(app.db, rows[0].library_id, stored)
+      if (!path) return reply.code(404).send({ error: `${kind} file missing on disk` })
       let st
       try { st = await stat(path) }
       catch { return reply.code(404).send({ error: `${kind} file missing on disk` }) }
@@ -526,9 +544,15 @@ export default async function mediaRoutes(app) {
   // ── Trickplay ────────────────────────────────────────────────────────────────
   // WebVTT and JPEG sprite sheet for seek-bar thumbnail previews.
   // Accept token via query param so the Vidstack thumbnails prop can use
-  // a plain URL without custom headers.
+  // a plain URL without custom headers. The sprite sheets are content frame
+  // thumbnails, so they require auth (the browser sends the httpOnly cookie
+  // automatically on same-origin image requests) AND a library access check,
+  // unlike the more benign poster/backdrop artwork.
 
   app.get('/:id/trickplay.vtt', { config: { public: false } }, async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       'SELECT trickplay_path FROM media_items WHERE id=$1', [request.params.id]
     )
@@ -538,9 +562,10 @@ export default async function mediaRoutes(app) {
     return serveTrickplayFile(reply, rows[0].trickplay_path, 'text/vtt; charset=utf-8')
   })
 
-  // Sprite sheet image is public — Vidstack resolves it as a relative URL from
-  // the VTT and cannot add auth headers for image requests.
-  app.get('/:id/trickplay.jpg', { config: { public: true } }, async (request, reply) => {
+  app.get('/:id/trickplay.jpg', { config: { public: false } }, async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       'SELECT trickplay_path FROM media_items WHERE id=$1', [request.params.id]
     )
@@ -552,6 +577,9 @@ export default async function mediaRoutes(app) {
   })
 
   app.get('/episode/:id/trickplay.vtt', { config: { public: false } }, async (request, reply) => {
+    if (!(await canAccessEpisode(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       'SELECT trickplay_path FROM episodes WHERE id=$1', [request.params.id]
     )
@@ -561,7 +589,10 @@ export default async function mediaRoutes(app) {
     return serveTrickplayFile(reply, rows[0].trickplay_path, 'text/vtt; charset=utf-8')
   })
 
-  app.get('/episode/:id/trickplay.jpg', { config: { public: true } }, async (request, reply) => {
+  app.get('/episode/:id/trickplay.jpg', { config: { public: false } }, async (request, reply) => {
+    if (!(await canAccessEpisode(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       'SELECT trickplay_path FROM episodes WHERE id=$1', [request.params.id]
     )
@@ -574,6 +605,9 @@ export default async function mediaRoutes(app) {
 
   // ── Intro / credits segments ─────────────────────────────────────────────────
   app.get('/episode/:id/segments', async (request, reply) => {
+    if (!(await canAccessEpisode(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       `SELECT id, type, start_secs, end_secs
        FROM media_segments WHERE episode_id=$1 ORDER BY start_secs`,
@@ -603,6 +637,17 @@ async function serveTrickplayFile(reply, filePath, contentType) {
 async function proxySubtitle(app, request, reply, { isEpisode }) {
   const idx = parseInt(request.params.idx, 10)
   if (Number.isNaN(idx)) return reply.code(400).send({ error: 'Bad subtitle index' })
+
+  // Proxy Subtitle tracks are content — gate them with the same library
+  // access check every other media route uses, so a restricted user can't
+  // pull subtitle text for items in libraries they were denied.
+  if (isEpisode) {
+    if (!(await canAccessEpisode(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Episode not found' })
+    }
+  } else if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+    return reply.code(404).send({ error: 'Media not found' })
+  }
 
   let filePath
   if (isEpisode) {

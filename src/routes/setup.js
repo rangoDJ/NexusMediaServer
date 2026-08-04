@@ -5,6 +5,19 @@ import { invalidateSettingsCache } from '../services/settingsCache.js'
 
 const INITIALIZED_FLAG = '/config/.initialized'
 
+// Optional first-run setup secret. If SETUP_TOKEN is set, the public wizard
+// endpoints (/browse, /complete) require it (as ?token= or Authorization:
+// Bearer) — this prevents an unauthenticated attacker who can reach a fresh,
+// not-yet-provisioned instance from pre-empting the owner and claiming the
+// initial admin account. Leave unset for a fully open wizard on a trusted LAN.
+const SETUP_TOKEN = process.env.SETUP_TOKEN ?? null
+function setupAuthorized(req) {
+  if (!SETUP_TOKEN) return true
+  const bearer = req.headers?.authorization?.replace(/^Bearer\s+/i, '') ?? ''
+  return typeof bearer === 'string' && bearer === SETUP_TOKEN ||
+         typeof req.query?.token === 'string' && req.query.token === SETUP_TOKEN
+}
+
 // Setup is required when the flag file doesn't exist AND the DB has no users.
 // Dual check: flag file is fast (no DB hit); DB is the fallback for flag-missing-but-done.
 export async function isSetupRequired(db) {
@@ -39,9 +52,15 @@ export default async function setupRoutes(app) {
     if (!await isSetupRequired(app.db)) {
       return reply.code(403).send({ error: 'Setup already completed' })
     }
+    if (!setupAuthorized(request)) {
+      return reply.code(401).send({ error: 'Setup token required' })
+    }
 
-    // Resolve to an absolute path, preventing traversal outside /
-    const safePath = resolve('/', request.query.path ?? '/')
+    // Resolve to an absolute path, preventing traversal outside the browse
+    // root (defaults to /, or SETUP_BROWSE_ROOT when configured — e.g. bind it
+    // to a media mount to avoid disclosing the whole container filesystem).
+    const root = process.env.SETUP_BROWSE_ROOT ?? '/'
+    const safePath = resolve(root, request.query.path ?? root)
 
     try {
       const entries = await readdir(safePath, { withFileTypes: true })
@@ -60,7 +79,12 @@ export default async function setupRoutes(app) {
     if (!await isSetupRequired(app.db)) {
       return reply.code(403).send({ error: 'Setup already completed' })
     }
+    if (!setupAuthorized(request)) {
+      return reply.code(401).send({ error: 'Setup token required' })
+    }
 
+    // Only the initial admin can exist before this runs; after the very first
+    // successful setup the flag + user checks above lock this out for good.
     const { admin = {}, libraries = [], tmdb_api_key } = request.body
 
     if (!admin.username?.trim()) {

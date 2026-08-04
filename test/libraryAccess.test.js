@@ -75,7 +75,17 @@ describe('canAccessEpisode', () => {
       if (sql.includes('episodes')) return { rows: [{ library_id: 'lib-1' }] }
       throw new Error('unexpected query: ' + sql)
     })
-    expect(await canAccessEpisode(db, { sub: 'u1', role: 'viewer' }, 'ep-1')).toBe(true)
+    const episodeId = '11111111-2222-3333-4444-555555555555'
+    expect(await canAccessEpisode(db, { sub: 'u1', role: 'viewer' }, episodeId)).toBe(true)
+  })
+
+  it('denies (rather than throws) when the episode id is malformed', async () => {
+    const db = fakeDb((sql) => {
+      if (sql.includes('user_library_access')) return { rows: [{ library_id: 'lib-1' }] }
+      if (sql.includes('episodes')) return { rows: [{ library_id: 'lib-1' }] }
+      throw new Error('unexpected query: ' + sql)
+    })
+    expect(await canAccessEpisode(db, { sub: 'u1', role: 'viewer' }, 'ep-1')).toBe(false)
   })
 })
 

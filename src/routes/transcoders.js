@@ -25,10 +25,25 @@ const PRIORITY_SETTING  = {
 }
 
 async function resolvePriority(db, hwAccel, explicitPriority) {
-  if (explicitPriority != null) return parseInt(explicitPriority)
+  const parsed = parseInt(explicitPriority, 10)
+  if (explicitPriority != null && Number.isFinite(parsed)) return parsed
   const key = PRIORITY_SETTING[hwAccel] ?? PRIORITY_SETTING.cpu
   const raw = await getSetting(db, key, String(DEFAULT_PRIORITY[hwAccel] ?? 1))
-  return parseInt(raw)
+  const fromDb = parseInt(raw, 10)
+  return Number.isFinite(fromDb) ? fromDb : DEFAULT_PRIORITY[hwAccel] ?? 1
+}
+
+// Transcoder URLs are later used by the server to make outbound requests — an
+// invalid scheme or a non-http value would turn the node list into a relay
+// target. Enforce http(s).
+function isHttpUrl(v) {
+  if (typeof v !== 'string' || !v.trim()) return false
+  try {
+    const u = new URL(v)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 export default async function transcoderRoutes(app) {
@@ -40,7 +55,7 @@ export default async function transcoderRoutes(app) {
     }
 
     const { name, url, hw_accel, is_builtin, priority } = request.body
-    if (!name || !url) return reply.code(400).send({ error: 'name and url required' })
+    if (!name || !isHttpUrl(url)) return reply.code(400).send({ error: 'name and a valid http(s) url required' })
 
     const hw       = hw_accel ?? 'cpu'
     const builtin  = Boolean(is_builtin)
@@ -78,7 +93,7 @@ export default async function transcoderRoutes(app) {
   // Manual registration (admin UI fallback — for transcoders on isolated networks)
   app.post('/', async (request, reply) => {
     const { name, url, hw_accel, priority } = request.body
-    if (!name || !url) return reply.code(400).send({ error: 'name and url required' })
+    if (!name || !isHttpUrl(url)) return reply.code(400).send({ error: 'name and a valid http(s) url required' })
 
     const hw       = hw_accel ?? 'cpu'
     const resolved = await resolvePriority(app.db, hw, priority)
@@ -101,12 +116,21 @@ export default async function transcoderRoutes(app) {
       values.push(is_enabled)
     }
     if (priority !== undefined) {
+      const p = parseInt(priority, 10)
+      if (!Number.isFinite(p)) return reply.code(400).send({ error: 'priority must be a number' })
       updates.push(`priority=$${updates.length + 1}`)
-      values.push(parseInt(priority))
+      values.push(p)
     }
     if (max_sessions !== undefined) {
-      updates.push(`max_sessions=$${updates.length + 1}`)
-      values.push(max_sessions === null ? null : parseInt(max_sessions))
+      if (max_sessions === null) {
+        updates.push(`max_sessions=$${updates.length + 1}`)
+        values.push(null)
+      } else {
+        const m = parseInt(max_sessions, 10)
+        if (!Number.isFinite(m) || m < 1) return reply.code(400).send({ error: 'max_sessions must be a positive number or null' })
+        updates.push(`max_sessions=$${updates.length + 1}`)
+        values.push(m)
+      }
     }
 
     if (!updates.length) return reply.code(400).send({ error: 'Nothing to update' })

@@ -66,6 +66,24 @@ export default async function usersRoutes(app) {
     const { rows: users } = await app.db.query('SELECT id FROM users WHERE id=$1', [request.params.id])
     if (!users.length) return reply.code(404).send({ error: 'User not found' })
 
+    // Reject malformed ids up front (they'd otherwise 500 on the FK/type
+    // check) and confirm every referenced library exists so the FK constraint
+    // doesn't blow up mid-transaction.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const invalid = library_ids.filter(id => !UUID_RE.test(id))
+    if (invalid.length) {
+      return reply.code(400).send({ error: `Invalid library id(s): ${invalid.join(', ')}` })
+    }
+    if (library_ids.length) {
+      const { rows: libs } = await app.db.query(
+        'SELECT id FROM libraries WHERE id = ANY($1::uuid[])',
+        [library_ids]
+      )
+      if (libs.length !== library_ids.length) {
+        return reply.code(400).send({ error: 'One or more library ids do not exist' })
+      }
+    }
+
     const client = await app.db.connect()
     try {
       await client.query('BEGIN')

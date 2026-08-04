@@ -61,7 +61,7 @@
 
 import { readdir, mkdir, rm, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
-import { join, basename, resolve as resolvePath } from 'path'
+import { join, basename, resolve as resolvePath, sep as pathSep } from 'path'
 import { pathToFileURL } from 'url'
 import axios from 'axios'
 
@@ -134,6 +134,9 @@ class PluginManager {
 
   /** @returns {string} absolute path of the plugin's writable data directory */
   getDataDir(pluginId) {
+    if (!isSafePluginId(pluginId)) {
+      throw new Error(`Refusing to resolve data dir for unsafe plugin id "${pluginId}"`)
+    }
     return join(PLUGINS_DATA_ROOT, pluginId)
   }
 
@@ -149,6 +152,13 @@ class PluginManager {
 
       if (!manifest?.id || !manifest?.name) {
         log.warn(`[plugins] "${entryPath}" missing manifest.id or manifest.name — skipped`)
+        return
+      }
+
+      // The plugin id is used to build filesystem paths (data dir, registry
+      // keys). Reject ids that could traverse out of the data root.
+      if (!isSafePluginId(manifest.id)) {
+        log.warn(`[plugins] "${entryPath}" has unsafe manifest.id "${manifest.id}" — skipped`)
         return
       }
 
@@ -403,6 +413,19 @@ class PluginManager {
   async install(downloadUrl, pluginName, db, log) {
     log.info(`[plugins] Downloading plugin from ${downloadUrl}`)
 
+    // Validate the download URL — must parse and be plain http(s). Rejecting
+    // anything else prevents a file:// / ':'-prefix mix-up and reduces the
+    // server being turned into a proxy for internal/unusual schemes.
+    let parsedUrl
+    try {
+      parsedUrl = new URL(downloadUrl)
+    } catch {
+      throw new Error('Invalid downloadUrl')
+    }
+    if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+      throw new Error('downloadUrl must be http(s)://')
+    }
+
     let content
     try {
       const { data } = await axios.get(downloadUrl, {
@@ -415,11 +438,20 @@ class PluginManager {
       throw new Error(`Download failed: ${err.message}`)
     }
 
-    // Determine filename
-    const filename = pluginName
-      ?? basename(new URL(downloadUrl).pathname)
-      ?? 'plugin.js'
-    const destPath = join(PLUGINS_PATH, filename.endsWith('.js') ? filename : `${filename}.js`)
+    // Determine a SAFE filename. The caller-supplied pluginName is attacker
+    // controlled (admin route) and must never be allowed to escape the
+    // plugins directory via `../`, absolute paths, or separators.
+    const suggested = pluginName ?? basename(parsedUrl.pathname || '')
+    const filename = sanitizePluginFilename(suggested)
+    if (!filename) {
+      // Fall back to a generic safe name rather than trusting the input
+      throw new Error(
+        pluginName
+          ? `Invalid pluginName "${pluginName}"`
+          : `Could not derive a valid filename from ${downloadUrl}`
+      )
+    }
+    const destPath = join(PLUGINS_PATH, filename)
 
     await writeFile(destPath, content, 'utf8')
     log.info(`[plugins] Saved plugin to ${destPath}`)
@@ -449,19 +481,23 @@ class PluginManager {
     // Unload from memory
     if (entry) await this.unloadPlugin(pluginId, log)
 
-    // Delete files
+    // Delete files. Never trust the DB path blindly — ensure the resolved
+    // path stays inside PLUGINS_PATH so a tainted file_path can't rm -rf an
+    // arbitrary directory.
     const filePath = entry?.filePath
     if (filePath && existsSync(filePath)) {
+      const pluginsRoot = resolvePath(PLUGINS_PATH)
       const isDir = filePath.endsWith('index.js')
-      try {
-        if (isDir) {
-          await rm(resolvePath(filePath, '..'), { recursive: true, force: true })
-        } else {
-          await rm(filePath, { force: true })
+      const target = resolvePath(isDir ? resolvePath(filePath, '..') : filePath)
+      if (target !== pluginsRoot && target.startsWith(pluginsRoot + pathSep)) {
+        try {
+          await rm(target, { recursive: true, force: true })
+          log.info(`[plugins] Deleted plugin files for "${pluginId}"`)
+        } catch (err) {
+          log.warn({ err }, `[plugins] Could not delete plugin files for "${pluginId}"`)
         }
-        log.info(`[plugins] Deleted plugin files for "${pluginId}"`)
-      } catch (err) {
-        log.warn({ err }, `[plugins] Could not delete plugin files for "${pluginId}"`)
+      } else {
+        log.warn(`[plugins] Refusing to delete path outside plugins root for "${pluginId}": ${target}`)
       }
     }
 
@@ -623,6 +659,25 @@ function withTimeout(promise, ms, label) {
       setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
     ),
   ])
+}
+
+/** Validate a plugin id is a safe path segment (used for data dirs/keys). */
+function isSafePluginId(id) {
+  return typeof id === 'string' && /^[a-z0-9._-]{1,64}$/.test(id)
+}
+
+/**
+ * Reduce a caller-supplied plugin filename to a safe basename ending in .js,
+ * or return null if it can't be made safe. Never allows traversal or
+ * separators so instances can't escape PLUGINS_PATH.
+ */
+function sanitizePluginFilename(name) {
+  if (typeof name !== 'string' || !name.trim()) return null
+  const base = basename(name.trim())
+  if (!base || base === '.' || base === '..') return null
+  if (base.includes('/') || base.includes('\\')) return null
+  if (/[\u0000-\u001f<>:"|?*]/.test(base)) return null
+  return base.endsWith('.js') ? base : `${base}.js`
 }
 
 /**

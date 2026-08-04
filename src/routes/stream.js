@@ -90,7 +90,17 @@ export default async function streamRoutes(app) {
       }
 
       nodeId = node.id
-      await claimSession(app.db, node.id)
+      // Atomic capacity check. If the node reached max_sessions between the
+      // pick query and now, tear down the just-started remote session instead
+      // of registering a row that over-represents the node's load.
+      const claimed = await claimSession(app.db, node.id)
+      if (!claimed) {
+        axios.delete(`${node.url}/session/${remoteSessionId}`, {
+          headers: { 'x-transcoder-secret': process.env.TRANSCODER_SECRET },
+          timeout: 3000,
+        }).catch(() => {})
+        return reply.code(503).send({ error: 'Transcoder node is at capacity; try again shortly' })
+      }
     }
 
     const { rows } = await app.db.query(`

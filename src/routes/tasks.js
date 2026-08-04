@@ -91,7 +91,7 @@ export default async function taskRoutes(app) {
     const task = await app.scheduler.getById(request.params.id)
     if (!task) return reply.code(404).send({ error: 'Task not found' })
 
-    const limit = Math.min(parseInt(request.query.limit ?? '20', 10) || 20, 100)
+    const limit = Math.max(1, Math.min(parseInt(request.query.limit ?? '20', 10) || 20, 100))
     return app.scheduler.getHistory(request.params.id, limit)
   })
 }

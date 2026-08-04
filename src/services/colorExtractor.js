@@ -1,4 +1,4 @@
-import { readFile } from 'fs/promises'
+import { readFile, stat } from 'fs/promises'
 import axios from 'axios'
 import jpeg from 'jpeg-js'
 import { PNG } from 'pngjs'
@@ -55,6 +55,10 @@ const OUT_SATURATION = { min: 0.45, max: 0.90 }
 const OUT_LIGHTNESS  = { min: 0.45, max: 0.62 }
 
 const MAX_BYTES = 8 * 1024 * 1024   // posters are ~100KB; this is a sanity cap
+// Decoder-brain limits: reject absurd PNG dimensions/pixel counts even when a
+// tiny on-disk file deflates those huge buffers (decompression-bomb guard).
+const MAX_DIM    = 16_384
+const MAX_PIXELS = 40_000_000      // 16384² would be ~1GB RGBA; cap pragmatically
 
 /** @returns {'jpeg'|'png'|null} */
 function sniffFormat(buf) {
@@ -71,6 +75,12 @@ function decode(buf) {
       // useTArray avoids allocating a Node Buffer copy of the pixel data.
       return jpeg.decode(buf, { useTArray: true, maxMemoryUsageInMB: 64 })
     case 'png':
+      // Guard against decompression bombs before PNG.sync.read allocates
+      // w*h*4 bytes: the IHDR length field is at bytes 16..23.
+      if (buf.length < 24) return null
+      const w = buf.readUInt32BE(16)
+      const h = buf.readUInt32BE(20)
+      if (w === 0 || h === 0 || w > MAX_DIM || h > MAX_DIM || w * h > MAX_PIXELS) return null
       return PNG.sync.read(buf)
     default:
       return null
@@ -229,8 +239,17 @@ export function blurhashFromPixels(image) {
 /** Load poster bytes from a URL or an absolute path. Returns null on failure. */
 async function loadBytes({ url, filePath }) {
   if (filePath) {
-    const buf = await readFile(filePath)
-    return buf.length > MAX_BYTES ? null : buf
+    // Stat first so an oversized (or since-deleted) file is rejected before we
+    // allocate a buffer for it — the buffer is otherwise allocated up-front by
+    // readFile regardless of size.
+    try {
+      const st = await stat(filePath)
+      if (!st.isFile() || st.size > MAX_BYTES) return null
+    } catch {
+      return null
+    }
+    const buf = await readFile(filePath).catch(() => null)
+    return buf && buf.length <= MAX_BYTES ? buf : null
   }
   if (url) {
     const { data } = await axios.get(url, {

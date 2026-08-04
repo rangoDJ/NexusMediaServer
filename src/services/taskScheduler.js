@@ -36,6 +36,7 @@ export class TaskScheduler extends EventEmitter {
   /** @type {Map<string, TaskDefinition>}  */ #tasks   = new Map()
   /** @type {Map<string, RuntimeState>}    */ #state   = new Map()
   /** @type {Map<string, NodeJS.Timeout[]>}*/ #timers  = new Map()
+  /** @type {boolean}                       */ #stopped = false
 
   constructor(db, log) {
     super()
@@ -69,6 +70,7 @@ export class TaskScheduler extends EventEmitter {
    * Must be called after the DB pool is ready.
    */
   async start() {
+    this.#stopped = false
     await this.#ensureConfigs()
     await this.#loadLastResults()
 
@@ -86,6 +88,14 @@ export class TaskScheduler extends EventEmitter {
 
   /** Clear all timers and cancel any running tasks. */
   async stop() {
+    // Setting #stopped first is essential: interval/daily triggers re-arm a
+    // NEW timeout from inside `scheduleNext()` (see #armTriggers), and that
+    // new handle is appended to a closure array no longer reachable via
+    // #timers — so `clearTimeout` below can't catch it. Without this flag the
+    // scheduler silently keeps running after shutdown, holding the event loop
+    // alive and firing tasks against a closing DB pool.
+    this.#stopped = true
+
     for (const handles of this.#timers.values()) {
       handles.forEach(h => clearTimeout(h))
     }
@@ -107,6 +117,10 @@ export class TaskScheduler extends EventEmitter {
    * @returns {boolean} false if the task was already running
    */
   async run(taskId) {
+    if (this.#stopped) {
+      this.#log.info(`[tasks] Scheduler stopped — ignoring run() for "${taskId}"`)
+      return false
+    }
     const task = this.#tasks.get(taskId)
     if (!task) throw new Error(`Unknown task "${taskId}"`)
 
@@ -272,6 +286,7 @@ export class TaskScheduler extends EventEmitter {
     for (const trigger of triggers) {
       if (trigger.type === 'startup') {
         const h = setTimeout(() => {
+          if (this.#stopped) return
           this.#log.info(`[tasks] Startup trigger firing for "${task.name}"`)
           this.run(task.id).catch(err =>
             this.#log.error({ err }, `[tasks] Startup trigger failed for "${task.name}"`)
@@ -282,12 +297,13 @@ export class TaskScheduler extends EventEmitter {
       } else if (trigger.type === 'interval') {
         const scheduleNext = () => {
           const h = setTimeout(() => {
+            if (this.#stopped) return
             this.#log.info(`[tasks] Interval trigger firing for "${task.name}"`)
             this.run(task.id)
               .catch(err =>
                 this.#log.error({ err }, `[tasks] Interval trigger failed for "${task.name}"`)
               )
-              .finally(() => scheduleNext())
+              .finally(() => { if (!this.#stopped) scheduleNext() })
           }, trigger.intervalMs)
           handles.push(h)
         }
@@ -296,12 +312,13 @@ export class TaskScheduler extends EventEmitter {
       } else if (trigger.type === 'daily') {
         const scheduleNext = () => {
           const h = setTimeout(() => {
+            if (this.#stopped) return
             this.#log.info(`[tasks] Daily trigger firing for "${task.name}"`)
             this.run(task.id)
               .catch(err =>
                 this.#log.error({ err }, `[tasks] Daily trigger failed for "${task.name}"`)
               )
-              .finally(() => scheduleNext())
+              .finally(() => { if (!this.#stopped) scheduleNext() })
           }, msUntilTimeOfDay(trigger.timeOfDay))
           handles.push(h)
         }

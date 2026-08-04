@@ -14,17 +14,40 @@
  *   data: {"type":"scan.error",       ...}\n\n
  *   : keepalive\n\n   (sent every 25 s to prevent proxy timeouts)
  */
+import { getAllowedLibraryIds } from '../services/libraryAccess.js'
+
+// Hard caps on concurrent SSE subscriber connections to prevent an
+// authenticated client (or set of clients) from exhausting memory/FDs.
+const MAX_TOTAL_CONNECTIONS = 200
+const MAX_PER_USER_CONNECTIONS = 5
+
 export default async function eventsRoute(app) {
   app.get('/events', { schema: { hide: true } }, async (request, reply) => {
-    // ── Authentication ────────────────────────────────────────────────────────
+    // ── Authentication (manual — EventSource can't set Authorization) ─────────
     const token = request.query.token ?? request.cookies?.nexus_access
     if (!token) return reply.code(401).send({ error: 'Not authenticated' })
 
+    let payload
     try {
-      app.jwt.verify(token)
+      payload = app.jwt.verify(token)
     } catch {
       return reply.code(401).send({ error: 'Invalid or expired token' })
     }
+
+    // ── Admission control BEFORE hijacking the response ────────────────────────
+    // An over-cap request must be rejected cleanly; once we hijack we can't
+    // return a status code.
+    const userId = payload?.sub ?? null
+    if (!app.broadcaster.canAddClient({
+      maxTotal: MAX_TOTAL_CONNECTIONS,
+      maxPerUser: MAX_PER_USER_CONNECTIONS,
+      userId,
+    })) {
+      return reply.code(503).send({ error: 'Too many open event streams' })
+    }
+
+    // A restricted user only receives events for libraries they can access.
+    const allowed = await getAllowedLibraryIds(app.db, payload)
 
     // ── Hijack the response so Fastify doesn't close it automatically ─────────
     reply.hijack()
@@ -45,7 +68,7 @@ export default async function eventsRoute(app) {
 
     // ── Register with broadcaster ─────────────────────────────────────────────
     send({ type: 'connected' })
-    app.broadcaster.addClient(send)
+    app.broadcaster.addClient(send, { userId, libraryFilter: allowed })
 
     // ── Keepalive — prevents proxy / load-balancer idle timeouts ─────────────
     const keepalive = setInterval(() => {

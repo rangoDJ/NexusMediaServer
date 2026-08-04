@@ -14,10 +14,17 @@
  *
  * LibraryChanged events are debounced by 2 s (matching Jellyfin) to batch
  * rapid item additions into a single notification.
+ *
+ * Robustness: connections are capped (globally and per user) and each client
+ * may supply an allowed-library set so events for libraries a restricted user
+ * can't access are never delivered.
  */
 export class ScanBroadcaster {
-  /** @type {Set<function>} send callbacks — one per SSE connection */
+  /** @type {Set<{send: Function, userId: string|null, libraryFilter: Set<string>|null}>} */
   #clients = new Set()
+
+  /** @type {Map<string, number>} userId → open connection count (for per-user caps) */
+  #perUser = new Map()
 
   /** @type {Map<string, {phase,progress,currentItem,libraryName}>} live scan state */
   #currentScans = new Map()
@@ -28,27 +35,55 @@ export class ScanBroadcaster {
   // ── Client management ────────────────────────────────────────────────────────
 
   /**
-   * Register an SSE send function.  The caller is responsible for removing it
-   * when the connection closes.
-   * @param {function} send — accepts a plain object; serialises to JSON internally
+   * Ask whether a new connection would be admitted under the given caps.
+   * Call before hijacking the response so an over-cap request can be rejected
+   * with a clean error instead of a leaked open socket.
    */
-  addClient(send) {
-    this.#clients.add(send)
-    // Catch up new client on any scans already in progress
+  canAddClient({ maxTotal = Infinity, maxPerUser = Infinity, userId = null } = {}) {
+    if (this.#clients.size >= maxTotal) return false
+    if (userId != null && (this.#perUser.get(userId) ?? 0) >= maxPerUser) return false
+    return true
+  }
+
+  /**
+   * Register an SSE send function.  The caller is responsible for removing it
+   * when the connection closes via removeClient(send).
+   * @param {function} send — accepts a plain object; serialises to JSON internally
+   * @param {{userId?: string, libraryFilter?: Set<string>|null}} [opts] — optional
+   *   per-client library scoping; events for libraries not in the set are skipped.
+   */
+  addClient(send, { userId = null, libraryFilter = null } = {}) {
+    this.#clients.add({ send, userId, libraryFilter })
+    if (userId != null) {
+      this.#perUser.set(userId, (this.#perUser.get(userId) ?? 0) + 1)
+    }
+    // Catch up new client on any scans already in progress (only allowed ones)
     for (const [libraryId, state] of this.#currentScans) {
-      this.#sendOne(send, {
-        type:        'refresh.progress',
-        libraryId,
-        libraryName: state.libraryName,
-        phase:       state.phase,
-        progress:    state.progress,
-        currentItem: state.currentItem,
-      })
+      if (libraryFilter === null || libraryFilter.has(libraryId)) {
+        this.#sendEntry({ send, userId, libraryFilter }, {
+          type:        'refresh.progress',
+          libraryId,
+          libraryName: state.libraryName,
+          phase:       state.phase,
+          progress:    state.progress,
+          currentItem: state.currentItem,
+        })
+      }
     }
   }
 
   removeClient(send) {
-    this.#clients.delete(send)
+    for (const entry of this.#clients) {
+      if (entry.send === send) {
+        this.#clients.delete(entry)
+        if (entry.userId != null) {
+          const n = (this.#perUser.get(entry.userId) ?? 1) - 1
+          if (n <= 0) this.#perUser.delete(entry.userId)
+          else this.#perUser.set(entry.userId, n)
+        }
+        break
+      }
+    }
   }
 
   get clientCount() { return this.#clients.size }
@@ -128,15 +163,19 @@ export class ScanBroadcaster {
 
   #broadcast(message) {
     const dead = []
-    for (const send of this.#clients) {
-      if (!this.#sendOne(send, message)) dead.push(send)
+    for (const entry of this.#clients) {
+      if (!this.#sendEntry(entry, message)) dead.push(entry.send)
     }
-    dead.forEach(s => this.#clients.delete(s))
+    dead.forEach(send => this.removeClient(send))
   }
 
   /** Returns false if the send failed (broken pipe etc.). */
-  #sendOne(send, message) {
-    try { send(message); return true }
+  #sendEntry(entry, message) {
+    // Skip events for libraries this client isn't allowed to see
+    if (entry.libraryFilter != null && message.libraryId && !entry.libraryFilter.has(message.libraryId)) {
+      return true
+    }
+    try { entry.send(message); return true }
     catch { return false }
   }
 }

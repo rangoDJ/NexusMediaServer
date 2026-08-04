@@ -4,6 +4,22 @@ import { invalidateSettingsCache } from '../services/settingsCache.js'
 // Keys that must never be returned to non-admin callers
 const SENSITIVE_KEYS = new Set(['tmdb.api_key'])
 
+// Settings are persisted as JSON. Reject values that would corrupt runtime
+// consumers (e.g. setting `auth.session_days` to a string and breaking the
+// `* 86_400` arithmetic) — only serialisable primitives/arrays/objects pass.
+function assertSerializable(key, value) {
+  if (value === undefined || value === null) {
+    throw new Error(`Setting "${key}" value cannot be null/undefined`)
+  }
+  const t = typeof value
+  if (t === 'function' || t === 'symbol' || t === 'bigint') {
+    throw new Error(`Setting "${key}" has an unsupported value type (${t})`)
+  }
+  if (t === 'number' && !Number.isFinite(value)) {
+    throw new Error(`Setting "${key}" must be a finite number`)
+  }
+}
+
 export default async function settingsRoutes(app) {
   // Public endpoint — returns non-sensitive settings the UI needs before login
   // (server name, registration toggle).
@@ -48,6 +64,8 @@ export default async function settingsRoutes(app) {
     if (!entries.length) return reply.code(400).send({ error: 'No valid keys provided' })
 
     for (const [key, value] of entries) {
+      try { assertSerializable(key, value) }
+      catch (err) { return reply.code(400).send({ error: err.message }) }
       await app.db.query(
         'UPDATE settings SET value=$1, updated_at=now() WHERE key=$2',
         [JSON.stringify(value), key]
@@ -62,6 +80,9 @@ export default async function settingsRoutes(app) {
   app.put('/:key', async (request, reply) => {
     const { key } = request.params
     const { value } = request.body
+
+    try { assertSerializable(key, value) }
+    catch (err) { return reply.code(400).send({ error: err.message }) }
 
     const { rowCount } = await app.db.query(
       'UPDATE settings SET value=$1, updated_at=now() WHERE key=$2',

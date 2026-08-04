@@ -17,11 +17,17 @@ export async function pickTranscoder(db) {
 }
 
 // Increment session count when a session is assigned to a node.
+// Atomic: the UPDATE re-checks the max_sessions cap in the SAME statement as
+// the increment, so two concurrent claims can't both pass a pickTranscoder-time
+// guard and oversubscribe a capped node. Returns true if the claim succeeded.
 export async function claimSession(db, nodeId) {
-  await db.query(
-    'UPDATE transcoder_nodes SET active_sessions = active_sessions + 1 WHERE id=$1',
+  const { rowCount } = await db.query(
+    `UPDATE transcoder_nodes
+     SET active_sessions = active_sessions + 1
+     WHERE id=$1 AND (max_sessions IS NULL OR active_sessions < max_sessions)`,
     [nodeId]
   )
+  return rowCount > 0
 }
 
 // Decrement session count when a session ends or is cleaned up.

@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import ffmpeg from 'fluent-ffmpeg'
 
 const TILE_COLS  = 10
@@ -7,6 +8,8 @@ const TILE_ROWS  = 10
 const THUMB_W    = 160
 const THUMB_H    = 90
 const INTERVAL   = 10 // seconds between frames
+// A hung ffmpeg on a malformed/long input must not pin the node forever.
+const GENERATE_TIMEOUT_MS = 5 * 60 * 1000
 
 export default async function trickplayRoutes(app) {
   /**
@@ -17,8 +20,12 @@ export default async function trickplayRoutes(app) {
    */
   app.post('/', async (request, reply) => {
     const { file_path, output_dir } = request.body
-    if (!file_path || !output_dir) {
-      return reply.code(400).send({ error: 'file_path and output_dir are required' })
+    if (typeof file_path !== 'string' || !file_path ||
+        typeof output_dir !== 'string' || !output_dir) {
+      return reply.code(400).send({ error: 'file_path and output_dir (strings) are required' })
+    }
+    if (!existsSync(file_path)) {
+      return reply.code(404).send({ error: 'File not found on transcoder' })
     }
 
     await mkdir(output_dir, { recursive: true })
@@ -39,7 +46,13 @@ export default async function trickplayRoutes(app) {
     let durationSecs = 0
 
     await new Promise((resolve, reject) => {
-      ffmpeg(file_path)
+      const timer = setTimeout(() => {
+        console.warn(`[trickplay] generation timed out after ${GENERATE_TIMEOUT_MS}ms — killing ffmpeg`)
+        try { command.kill('SIGKILL') } catch {}
+        reject(new Error('trickplay generation timed out'))
+      }, GENERATE_TIMEOUT_MS)
+
+      const command = ffmpeg(file_path)
         .outputOptions([
           '-vf', vfsFilter,
           '-frames:v', '1',
@@ -50,8 +63,8 @@ export default async function trickplayRoutes(app) {
           const m = data.duration?.match(/(\d+):(\d+):(\d+)/)
           if (m) durationSecs = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3])
         })
-        .on('end', resolve)
-        .on('error', reject)
+        .on('end', () => { clearTimeout(timer); resolve() })
+        .on('error', err => { clearTimeout(timer); reject(err) })
         .run()
     })
 

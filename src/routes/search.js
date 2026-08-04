@@ -47,17 +47,22 @@ export default async function searchRoutes(app) {
 
     // People — backed by the media_cast index table (kept in sync via trigger).
     // Trigram GIN index on name makes this fast even for libraries with
-    // tens of thousands of items.
+    // tens of thousands of items. Scoped to accessible libraries so search
+    // can't reveal people tied only to restricted content.
+    const peopleParams = [pattern]
+    const peopleLibCond = await libraryFilterCondition(app.db, request.user, peopleParams, 'm.library_id')
     const peopleQ = await app.db.query(
-      `SELECT DISTINCT ON (person_id)
-              person_id   AS id,
-              name,
-              profile_url
-       FROM media_cast
-       WHERE name ILIKE $1 ESCAPE '!'
-       ORDER BY person_id, name
+      `SELECT DISTINCT ON (mc.person_id)
+              mc.person_id AS id,
+              mc.name,
+              mc.profile_url
+       FROM media_cast mc
+       JOIN media_items m ON m.id = mc.media_item_id
+       WHERE mc.name ILIKE $1 ESCAPE '!'
+         ${peopleLibCond ? `AND ${peopleLibCond}` : ''}
+       ORDER BY mc.person_id, mc.name
        LIMIT 30`,
-      [pattern]
+      peopleParams
     )
 
     return { movies, series, episodes: epQ.rows, people: peopleQ.rows }

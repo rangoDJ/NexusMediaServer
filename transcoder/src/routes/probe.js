@@ -2,9 +2,17 @@ import ffmpeg from 'fluent-ffmpeg'
 import { existsSync } from 'fs'
 import { stat } from 'fs/promises'
 
+// ffprobe on a malformed/hung input must not pin the node forever.
+const PROBE_TIMEOUT_MS = 30_000
+
 function probeFile(filePath) {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      console.warn(`[probe] ffprobe timed out after ${PROBE_TIMEOUT_MS}ms: ${filePath}`)
+      reject(new Error('probe timed out'))
+    }, PROBE_TIMEOUT_MS)
     ffmpeg.ffprobe(filePath, (err, metadata) => {
+      clearTimeout(timer)
       if (err) return reject(err)
       resolve(metadata)
     })
@@ -14,7 +22,9 @@ function probeFile(filePath) {
 export default async function probeRoutes(app) {
   app.post('/', async (request, reply) => {
     const { file_path } = request.body
-    if (!file_path) return reply.code(400).send({ error: 'file_path required' })
+    if (typeof file_path !== 'string' || !file_path) {
+      return reply.code(400).send({ error: 'file_path required' })
+    }
     if (!existsSync(file_path)) return reply.code(404).send({ error: 'File not found' })
 
     const [metadata, fileStat] = await Promise.all([

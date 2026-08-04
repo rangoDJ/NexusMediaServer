@@ -322,10 +322,18 @@ function attachLifecycle({ session_id, proc, entry, outputDir, hwAccel, isAbr, o
     const sentinel = isAbr ? join(outputDir, 'master.m3u8') : join(outputDir, 'playlist.m3u8')
     entry.watchdog = setTimeout(() => {
       if (!existsSync(sentinel)) {
-        console.warn(`[transcoder] ${hwAccel} watchdog (${HW_WATCHDOG_SECS}s) — no output yet, killing and retrying with CPU`)
-        try { proc.kill('SIGKILL') } catch {}
+        console.warn(`[transcoder] ${hwAccel} watchdog (${HW_WATCHDOG_SECS}s) — no output yet, tearing down and retrying with CPU`)
+        // Null the process reference first so the imminent 'error' event from
+        // the kill can't double-dispatch onHwFail; we run it ourselves below,
+        // only after the GPU context has fully settled.
         entry.process = null
-        if (onHwFail) onHwFail()
+        void (async () => {
+          // Graceful escalation: SIGTERM then SIGKILL after SIGKILL_GRACE_MS,
+          // awaiting the i915-context settle so the CPU retry reopens a clean
+          // device rather than pegging the render engine.
+          await drainProcess(session_id, proc).catch(() => {})
+          if (onHwFail) onHwFail()
+        })()
       }
     }, HW_WATCHDOG_SECS * 1000)
   }
@@ -380,10 +388,11 @@ async function drainProcess(session_id, proc) {
 
   await new Promise(resolve => {
     let settled = false
+    let killTimer = null
     const settle = () => {
       if (settled) return
       settled = true
-      clearTimeout(killTimer)
+      if (killTimer) clearTimeout(killTimer)
       // Brief settle gap so the kernel driver retires the GPU context ring
       setTimeout(resolve, GPU_CONTEXT_SETTLE_MS)
     }
@@ -398,7 +407,7 @@ async function drainProcess(session_id, proc) {
       return
     }
 
-    const killTimer = setTimeout(() => {
+    killTimer = setTimeout(() => {
       console.warn(
         `[transcoder] ${session_id}: ffmpeg still running ${SIGKILL_GRACE_MS}ms after SIGTERM — ` +
         `escalating to SIGKILL (GPU context may not release cleanly)`

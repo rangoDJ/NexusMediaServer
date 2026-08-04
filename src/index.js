@@ -121,7 +121,13 @@ if (!process.env.TRANSCODER_SECRET || process.env.TRANSCODER_SECRET.length < 32)
 }
 
 app.decorate('authenticate', authMiddleware)
-app.decorate('db', await createPool())
+try {
+  app.decorate('db', await createPool())
+} catch (err) {
+  console.error('FATAL: Could not connect to the database:', err.message)
+  console.error('Check DATABASE_URL / the Postgres credentials in .env before starting.')
+  process.exit(1)
+}
 
 // ── Scan broadcaster (SSE fan-out) ────────────────────────────────────────────
 const broadcaster = new ScanBroadcaster()
@@ -247,5 +253,9 @@ try {
   await directoryWatcher.start()
 } catch (err) {
   app.log.error(err)
+  // Close the app first so the onClose hooks run (killing the built-in
+  // transcoder child, clearing the health poller + scheduler timers). A bare
+  // process.exit(1) would orphan them.
+  await app.close().catch(() => {})
   process.exit(1)
 }

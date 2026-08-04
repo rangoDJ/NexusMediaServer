@@ -12,7 +12,7 @@ export default async function activityRoutes(app) {
   app.addHook('preHandler', requireAdmin)
 
   app.get('/', async (request) => {
-    const limit = Math.min(parseInt(request.query.limit ?? '20', 10) || 20, 100)
+    const limit = Math.max(1, Math.min(parseInt(request.query.limit ?? '20', 10) || 20, 100))
     const params = []
     let where = ''
     if (request.query.before) {

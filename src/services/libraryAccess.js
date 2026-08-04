@@ -7,6 +7,15 @@
  * unrestricted regardless of this table.
  */
 
+import { resolve as resolvePath, sep as pathSep } from 'path'
+import { realpath } from 'fs/promises'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function isUuid(v) {
+  return typeof v === 'string' && UUID_RE.test(v)
+}
+
 /**
  * @returns {Promise<Set<string>|null>} null = unrestricted (sees everything),
  *   otherwise the set of library ids the user may access.
@@ -32,6 +41,8 @@ export async function canAccessLibrary(db, user, libraryId) {
 export async function canAccessMediaItem(db, user, mediaItemId) {
   const allowed = await getAllowedLibraryIds(db, user)
   if (allowed === null) return true
+  // Malformed ids would throw a Postgres type error → 500. Treat as no-access.
+  if (!isUuid(mediaItemId)) return false
   const { rows } = await db.query('SELECT library_id FROM media_items WHERE id=$1', [mediaItemId])
   if (!rows.length) return false
   return allowed.has(rows[0].library_id)
@@ -54,6 +65,7 @@ export async function libraryFilterCondition(db, user, params, column) {
 export async function canAccessEpisode(db, user, episodeId) {
   const allowed = await getAllowedLibraryIds(db, user)
   if (allowed === null) return true
+  if (!isUuid(episodeId)) return false
   const { rows } = await db.query(`
     SELECT m.library_id FROM episodes e
     JOIN media_items m ON m.id = e.series_id
@@ -61,4 +73,27 @@ export async function canAccessEpisode(db, user, episodeId) {
   `, [episodeId])
   if (!rows.length) return false
   return allowed.has(rows[0].library_id)
+}
+
+/**
+ * Resolve a filesystem path, following symlinks, and confirm it lands inside
+ * one of the library's configured roots. Returns the resolved realpath when
+ * contained, otherwise null. Used to harden media-artwork serving against a
+ * symlink/DB-path pointing anywhere on disk.
+ */
+export async function resolveWithinLibrary(db, libraryId, filePath) {
+  if (!libraryId || typeof filePath !== 'string' || !filePath) return null
+  try {
+    const { rows } = await db.query('SELECT paths FROM libraries WHERE id=$1', [libraryId])
+    if (!rows.length) return null
+    const roots = (rows[0].paths ?? []).map(p => resolvePath(String(p)))
+    if (!roots.length) return null
+    const real = await realpath(filePath)
+    for (const root of roots) {
+      if (real === root || real.startsWith(root + pathSep)) return real
+    }
+    return null
+  } catch {
+    return null
+  }
 }

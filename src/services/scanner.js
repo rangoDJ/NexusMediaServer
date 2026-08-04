@@ -375,16 +375,26 @@ async function scanMovies(db, library, rootPath, tmdbOpts, log, onItem = null, s
       log.info(`[scan] Processing movie dir: ${entry.name} → ${videoFile}${posterFile ? ` (+poster: ${posterFile})` : ''}`)
       onItem?.(filePath)
       seenPaths.add(filePath)
-      const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork)
-      if (added) itemsAdded.push(added)
+      // A single bad item (constraint/type error) must never kill the whole
+      // library scan — log and continue to the next file.
+      try {
+        const added = await upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localArtwork)
+        if (added) itemsAdded.push(added)
+      } catch (err) {
+        log.warn({ err }, `[scan] Skipping movie "${filePath}" after upsert error: ${err.message}`)
+      }
       await yieldToEventLoop()
 
     } else if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
       log.info(`[scan] Processing movie file: ${entry.name}`)
       onItem?.(fullPath)
       seenPaths.add(fullPath)
-      const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log, { poster_path: null, backdrop_path: null })
-      if (added) itemsAdded.push(added)
+      try {
+        const added = await upsertMovie(db, library, fullPath, null, tmdbOpts, log, { poster_path: null, backdrop_path: null })
+        if (added) itemsAdded.push(added)
+      } catch (err) {
+        log.warn({ err }, `[scan] Skipping movie "${fullPath}" after upsert error: ${err.message}`)
+      }
       await yieldToEventLoop()
 
     } else {
@@ -874,23 +884,29 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signa
           ...(fileInfo?.subtitle_streams ? { subtitle_streams: fileInfo.subtitle_streams } : {}),
         }
 
-        await db.query(`
-          INSERT INTO episodes(
-            series_id, season_number, episode_number, title, plot, file_path, nfo_path,
-            duration_secs, video_codec, audio_codec, container, file_size, width, height, bitrate_kbps,
-            metadata
-          )
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-          ON CONFLICT DO NOTHING
-        `, [
-          seriesId, seasonNumber, episodeNumber,
-          epNfo.title ?? null, epNfo.plot ?? null, filePath, epNfoPath,
-          fileInfo?.duration_secs ?? null, fileInfo?.video?.codec ?? null,
-          fileInfo?.audio?.codec ?? null,  fileInfo?.container ?? null,
-          fileInfo?.file_size ?? null,     fileInfo?.video?.width ?? null,
-          fileInfo?.video?.height ?? null, fileInfo?.bitrate_kbps ?? null,
-          JSON.stringify(epMetadata),
-        ])
+        // A single bad episode (constraint/type error) must never abort the
+        // whole series scan — log and continue to the next episode.
+        try {
+          await db.query(`
+            INSERT INTO episodes(
+              series_id, season_number, episode_number, title, plot, file_path, nfo_path,
+              duration_secs, video_codec, audio_codec, container, file_size, width, height, bitrate_kbps,
+              metadata
+            )
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            ON CONFLICT DO NOTHING
+          `, [
+            seriesId, seasonNumber, episodeNumber,
+            epNfo.title ?? null, epNfo.plot ?? null, filePath, epNfoPath,
+            fileInfo?.duration_secs ?? null, fileInfo?.video?.codec ?? null,
+            fileInfo?.audio?.codec ?? null,  fileInfo?.container ?? null,
+            fileInfo?.file_size ?? null,     fileInfo?.video?.width ?? null,
+            fileInfo?.video?.height ?? null, fileInfo?.bitrate_kbps ?? null,
+            JSON.stringify(epMetadata),
+          ])
+        } catch (err) {
+          log.warn({ err }, `[scan] Skipping episode "${filePath}" after insert error: ${err.message}`)
+        }
         await yieldToEventLoop()
       }
     }

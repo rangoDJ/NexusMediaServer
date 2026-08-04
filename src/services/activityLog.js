@@ -15,8 +15,18 @@
  * @param {object|null} [entry.details]
  */
 export function logActivity(db, log, { type, message, severity = 'info', userId = null, details = null }) {
+  // JSON.stringify on details can throw synchronously (circular refs) — and
+  // this is called fire-and-forget, so a throw here escapes into the caller's
+  // async context. Never let activity recording break the action it describes.
+  let serialized = null
+  try {
+    serialized = details ? JSON.stringify(details) : null
+  } catch {
+    log?.warn('[activity] Failed to serialise activity details — recording without them')
+    serialized = null
+  }
   db.query(
     'INSERT INTO activity_log(type, severity, message, user_id, details) VALUES($1,$2,$3,$4,$5)',
-    [type, severity, message, userId, details ? JSON.stringify(details) : null]
+    [type, severity, message, userId, serialized]
   ).catch(err => log.warn({ err }, '[activity] Failed to record activity'))
 }
