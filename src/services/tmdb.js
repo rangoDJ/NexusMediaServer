@@ -132,6 +132,23 @@ export async function fetchSeriesById(tmdbId, { apiKey, language = 'en' } = {}) 
 }
 
 /**
+ * Resolves a foreign id (e.g. a TVDB id baked into a Sonarr-style folder
+ * name) to a TMDB id via TMDB's /find endpoint — TMDB has no direct lookup
+ * by TVDB id, only this cross-reference search.
+ * @param {string|number} externalId
+ * @param {'tvdb_id'|'imdb_id'} source
+ * @returns {Promise<number|null>} the matching TMDB id, or null
+ */
+export async function findTmdbIdByExternalId(externalId, source, { apiKey, mediaType = 'movie' } = {}) {
+  const key = apiKey || process.env.TMDB_API_KEY
+  if (!key || !externalId) return null
+  const tmdb = client(key)
+  const { data } = await tmdb.get(`/find/${externalId}`, { params: { external_source: source } })
+  const bucket = mediaType === 'tv' ? data.tv_results : data.movie_results
+  return bucket?.[0]?.id ?? null
+}
+
+/**
  * Search TMDB for alternative matches — used by the manual re-identification feature.
  * type: 'movie' | 'tv'
  */

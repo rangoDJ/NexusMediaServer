@@ -1,7 +1,7 @@
 import { readdir, stat } from 'fs/promises'
 import { join, extname, basename, dirname } from 'path'
 import { parseNfo } from './nfoParser.js'
-import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById } from './tmdb.js'
+import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById, findTmdbIdByExternalId } from './tmdb.js'
 import { getSettings } from './settingsCache.js'
 import { probeFile, invalidateProbeCache } from './probe.js'
 import { callHook } from './pluginLoader.js'
@@ -465,6 +465,13 @@ async function upsertMovie(db, library, filePath, nfoPath, tmdbOpts, log, localA
       if (folderTags.tmdbId) {
         log.info(`[scan] Folder name has embedded TMDB id ${folderTags.tmdbId} for "${title}" — fetching directly`)
         tmdbMeta = await fetchMovieById(folderTags.tmdbId, tmdbOpts)
+      } else if (folderTags.tvdbId) {
+        // No direct TMDB endpoint for a TVDB id — resolve it via TMDB's
+        // cross-reference /find endpoint first, same intent as the tmdbId
+        // branch above: an exact match beats a fuzzy title search.
+        log.info(`[scan] Folder name has embedded TVDB id ${folderTags.tvdbId} for "${title}" — resolving via TMDB`)
+        const resolvedId = await findTmdbIdByExternalId(folderTags.tvdbId, 'tvdb_id', { ...tmdbOpts, mediaType: 'movie' })
+        if (resolvedId) tmdbMeta = await fetchMovieById(resolvedId, tmdbOpts)
       }
       if (!tmdbMeta.tmdb_id) {
         log.info(`[scan] Fetching TMDB metadata for "${title}" (${year ?? '?'})`)
@@ -659,6 +666,12 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signa
           if (folderTags.tmdbId) {
             log.info(`[scan] Folder name has embedded TMDB id ${folderTags.tmdbId} for "${title}" — fetching directly`)
             meta = await fetchSeriesById(folderTags.tmdbId, tmdbOpts)
+          } else if (folderTags.tvdbId) {
+            // Sonarr's default naming tags TV shows with their TheTVDB id,
+            // which TMDB has no direct lookup for — resolve via /find first.
+            log.info(`[scan] Folder name has embedded TVDB id ${folderTags.tvdbId} for "${title}" — resolving via TMDB`)
+            const resolvedId = await findTmdbIdByExternalId(folderTags.tvdbId, 'tvdb_id', { ...tmdbOpts, mediaType: 'tv' })
+            if (resolvedId) meta = await fetchSeriesById(resolvedId, tmdbOpts)
           }
           if (!meta.tmdb_id) {
             log.info(`[scan] Fetching TMDB series metadata for "${title}"`)

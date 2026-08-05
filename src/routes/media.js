@@ -445,7 +445,10 @@ export default async function mediaRoutes(app) {
   })
 
   // Watch progress
-  app.get('/:id/progress', async (request) => {
+  app.get('/:id/progress', async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const userId = request.user.sub
     const { rows } = await app.db.query(
       'SELECT * FROM watch_progress WHERE user_id=$1 AND media_item_id=$2',
@@ -455,6 +458,9 @@ export default async function mediaRoutes(app) {
   })
 
   app.put('/:id/progress', async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const userId = request.user.sub
     const { position_secs, duration_secs, completed } = request.body
     await app.db.query(`
@@ -467,7 +473,10 @@ export default async function mediaRoutes(app) {
   })
 
   // Episode-level watch progress (separate from media_item progress)
-  app.get('/episode/:episodeId/progress', async (request) => {
+  app.get('/episode/:episodeId/progress', async (request, reply) => {
+    if (!(await canAccessEpisode(app.db, request.user, request.params.episodeId))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       'SELECT * FROM watch_progress WHERE user_id=$1 AND episode_id=$2',
       [request.user.sub, request.params.episodeId]
@@ -476,6 +485,9 @@ export default async function mediaRoutes(app) {
   })
 
   app.put('/episode/:episodeId/progress', async (request, reply) => {
+    if (!(await canAccessEpisode(app.db, request.user, request.params.episodeId))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { position_secs, duration_secs, completed } = request.body
     await app.db.query(`
       INSERT INTO watch_progress(user_id, episode_id, position_secs, duration_secs, completed)
@@ -488,7 +500,10 @@ export default async function mediaRoutes(app) {
 
   // ── Favorites ────────────────────────────────────────────────────────────────
 
-  app.get('/:id/favorite', async (request) => {
+  app.get('/:id/favorite', async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     const { rows } = await app.db.query(
       'SELECT 1 FROM user_favorites WHERE user_id=$1 AND media_item_id=$2',
       [request.user.sub, request.params.id]
@@ -497,6 +512,9 @@ export default async function mediaRoutes(app) {
   })
 
   app.post('/:id/favorite', async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     await app.db.query(`
       INSERT INTO user_favorites(user_id, media_item_id) VALUES($1,$2)
       ON CONFLICT DO NOTHING
@@ -505,6 +523,9 @@ export default async function mediaRoutes(app) {
   })
 
   app.delete('/:id/favorite', async (request, reply) => {
+    if (!(await canAccessMediaItem(app.db, request.user, request.params.id))) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
     await app.db.query(
       'DELETE FROM user_favorites WHERE user_id=$1 AND media_item_id=$2',
       [request.user.sub, request.params.id]

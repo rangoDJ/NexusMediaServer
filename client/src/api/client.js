@@ -8,6 +8,15 @@ import axios from 'axios'
 // UI display only — the server is the real authority on every request).
 export const api = axios.create({ baseURL: '/api/v1', withCredentials: true })
 
+// Refresh tokens rotate server-side (old one is revoked the instant a new
+// pair is issued — see POST /auth/refresh). If several requests 401 at once
+// (e.g. the dashboard's parallel fetches on mount), each independently
+// calling /auth/refresh would race: only the first succeeds, and every other
+// one gets 401 back from a token that's already been rotated out from under
+// it, forcing a spurious logout on an otherwise-healthy session. Sharing one
+// in-flight refresh promise across concurrent 401s avoids that.
+let refreshPromise = null
+
 api.interceptors.response.use(
   r => r,
   async err => {
@@ -25,7 +34,11 @@ api.interceptors.response.use(
     if (err.response?.status === 401 && !isAuthEndpoint && !original._retried) {
       original._retried = true
       try {
-        await axios.post('/api/v1/auth/refresh', {}, { withCredentials: true })
+        if (!refreshPromise) {
+          refreshPromise = axios.post('/api/v1/auth/refresh', {}, { withCredentials: true })
+            .finally(() => { refreshPromise = null })
+        }
+        await refreshPromise
         return api(original)
       } catch {
         // Refresh failed — fall through to logout

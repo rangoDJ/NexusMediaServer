@@ -1,4 +1,4 @@
-import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById } from '../services/tmdb.js'
+import { fetchMovieMetadata, fetchSeriesMetadata, fetchMovieById, fetchSeriesById, findTmdbIdByExternalId } from '../services/tmdb.js'
 import { getSettings } from '../services/settingsCache.js'
 import { parseProviderTags } from '../services/providerTags.js'
 
@@ -49,8 +49,9 @@ export const refreshMetadataTask = {
     // Pure local string work — runs regardless of whether TMDB is configured.
     let titlesCleaned = 0
     for (const item of items) {
-      const { tmdbId, cleanName } = parseProviderTags(item.title)
+      const { tmdbId, tvdbId, cleanName } = parseProviderTags(item.title)
       item.embeddedTmdbId = tmdbId
+      item.embeddedTvdbId = tvdbId
       if (cleanName && cleanName !== item.title) {
         await db.query('UPDATE media_items SET title=$2 WHERE id=$1', [item.id, cleanName])
         item.title = cleanName
@@ -91,8 +92,16 @@ export const refreshMetadataTask = {
       try {
         // Prefer an already-confirmed tmdb_id; otherwise an id embedded in
         // the (now-cleaned) title's original folder name is a guaranteed-
-        // accurate lookup, far better than a fuzzy search.
-        const effectiveTmdbId = item.tmdb_id ?? item.embeddedTmdbId
+        // accurate lookup, far better than a fuzzy search. A TVDB id (Sonarr's
+        // default naming) needs an extra hop through TMDB's /find endpoint
+        // first, since TMDB has no direct-by-TVDB-id lookup.
+        let effectiveTmdbId = item.tmdb_id ?? item.embeddedTmdbId
+        if (!effectiveTmdbId && item.embeddedTvdbId) {
+          effectiveTmdbId = await findTmdbIdByExternalId(item.embeddedTvdbId, 'tvdb_id', {
+            ...tmdbOpts,
+            mediaType: item.type === 'movie' ? 'movie' : 'tv',
+          })
+        }
 
         let meta
         if (effectiveTmdbId) {
