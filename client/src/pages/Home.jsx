@@ -52,11 +52,14 @@ export default function Home() {
 
     async function load() {
       try {
-        const [libsRes, cwRes, nextUpRes, favRes] = await Promise.all([
+        // All independent — one round trip each, in parallel, rather than
+        // waiting on /libraries before firing a request per library.
+        const [libsRes, cwRes, nextUpRes, favRes, latestRes] = await Promise.all([
           api.get('/libraries').catch(() => ({ data: [] })),
           api.get('/media/continue-watching').catch(() => ({ data: [] })),
           api.get('/media/next-up').catch(() => ({ data: [] })),
           api.get('/media/favorites').catch(() => ({ data: [] })),
+          api.get('/media/latest', { params: { limit: 16 } }).catch(() => ({ data: [] })),
         ])
         if (cancelled) return
 
@@ -66,15 +69,11 @@ export default function Home() {
         setNextUp(nextUpRes.data)
         setFavorites(favRes.data)
 
-        const results = await Promise.all(
-          libs.map(lib =>
-            api.get('/media', { params: { library_id: lib.id, sort: 'recently_added', limit: 16 } })
-               .then(r => ({ libId: lib.id, data: r.data }))
-               .catch(() => ({ libId: lib.id, data: [] }))
-          )
-        )
-        if (cancelled) return
-        setRecentByLibrary(Object.fromEntries(results.map(r => [r.libId, r.data])))
+        const grouped = {}
+        for (const item of latestRes.data) {
+          (grouped[item.library_id] ??= []).push(item)
+        }
+        setRecentByLibrary(grouped)
       } finally {
         if (!cancelled) setLoading(false)
       }

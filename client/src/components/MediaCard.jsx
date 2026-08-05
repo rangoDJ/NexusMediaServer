@@ -129,7 +129,7 @@ export default function MediaCard({
               src={item.poster_url}
               alt=""
               loading="lazy"
-              className={`${styles.poster} ${imgLoaded ? styles.posterLoaded : ''}`}
+              className={`${styles.posterImg} ${imgLoaded ? styles.posterLoaded : ''}`}
               onLoad={() => setImgLoaded(true)}
             />
           </>

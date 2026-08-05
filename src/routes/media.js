@@ -151,7 +151,7 @@ export default async function mediaRoutes(app) {
     const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
     const { rows } = await app.db.query(`
       SELECT m.id, m.type, m.title, m.year, m.poster_url, m.duration_secs,
-             m.dominant_color, m.blurhash,
+             m.dominant_color, m.blurhash, m.metadata,
              wp.position_secs, wp.updated_at
       FROM watch_progress wp
       JOIN media_items m ON m.id = wp.media_item_id
@@ -160,7 +160,11 @@ export default async function mediaRoutes(app) {
       ORDER BY wp.updated_at DESC
       LIMIT 20
     `, params)
-    return rows
+    return rows.map(r => {
+      applyLocalArtwork(r)
+      delete r.metadata
+      return r
+    })
   })
 
   // Items the current user has starred, newest first
@@ -230,6 +234,47 @@ export default async function mediaRoutes(app) {
       ORDER BY e.series_id, e.season_number, e.episode_number
       LIMIT 20
     `, params)
+    return rows.map(r => {
+      applyLocalArtwork(r)
+      delete r.metadata
+      return r
+    })
+  })
+
+  // Latest items per accessible library in one query, for the dashboard's
+  // "Latest [Library]" rows — replaces what used to be one /media request
+  // per library (see client Home.jsx) with a single round trip.
+  app.get('/latest', async (request) => {
+    const limit = Math.max(1, Math.min(parseInt(request.query.limit ?? '16', 10) || 16, 50))
+    const userId = request.user.sub
+    const params = [userId, limit]
+    const libCond = await libraryFilterCondition(app.db, request.user, params, 'm.library_id')
+    const where = libCond ? `WHERE ${libCond}` : ''
+    const { rows } = await app.db.query(
+      `SELECT id, library_id, type, title, year, genres, poster_url, backdrop_url, rating,
+              duration_secs, video_codec, audio_codec, container, width, height, created_at,
+              metadata, dominant_color, blurhash, watched, position_secs, is_favorite, unwatched_count
+       FROM (
+         SELECT m.id, m.library_id, m.type, m.title, m.year, m.genres, m.poster_url, m.backdrop_url, m.rating,
+                m.duration_secs, m.video_codec, m.audio_codec, m.container, m.width, m.height, m.created_at,
+                m.metadata, m.dominant_color, m.blurhash,
+                wp.completed AS watched, wp.position_secs,
+                (uf.user_id IS NOT NULL) AS is_favorite,
+                CASE WHEN m.type = 'series' THEN (
+                  SELECT COUNT(*)::int FROM episodes e
+                  LEFT JOIN watch_progress ewp ON ewp.episode_id = e.id AND ewp.user_id = $1
+                  WHERE e.series_id = m.id AND ewp.completed IS NOT TRUE
+                ) ELSE NULL END AS unwatched_count,
+                ROW_NUMBER() OVER (PARTITION BY m.library_id ORDER BY m.created_at DESC NULLS LAST) AS rn
+         FROM media_items m
+         LEFT JOIN watch_progress wp ON wp.media_item_id = m.id AND wp.user_id = $1
+         LEFT JOIN user_favorites uf ON uf.media_item_id = m.id AND uf.user_id = $1
+         ${where}
+       ) ranked
+       WHERE rn <= $2
+       ORDER BY library_id, rn`,
+      params
+    )
     return rows.map(r => {
       applyLocalArtwork(r)
       delete r.metadata

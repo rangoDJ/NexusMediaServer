@@ -41,6 +41,13 @@ export default function Row({ title, eyebrow, linkTo, children, className = '' }
       el.removeEventListener('scroll', measure)
       ro.disconnect()
     }
+  }, [measure])
+
+  // The scroller's own box doesn't resize when its overflow content changes
+  // (cards loading in), so ResizeObserver alone won't catch that — re-measure
+  // directly instead of tearing down and rebuilding the listeners above.
+  useEffect(() => {
+    measure()
   }, [measure, children])
 
   function scrollBy(dir) {
