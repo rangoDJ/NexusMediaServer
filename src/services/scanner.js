@@ -642,12 +642,22 @@ async function scanTv(db, library, rootPath, tmdbOpts, log, onItem = null, signa
     // unsafe — a series whose DB title came from NFO/TMDB would look like a
     // new series, and a TMDB miss on re-scan could spawn a duplicate empty
     // row with no episodes (orphaning the real episodes from the user's view).
+    //
+    // Also match the RAW, pre-clean folder name (title=$4): a row scanned
+    // before a provider-tag was recognized (e.g. the tvdb tag support added
+    // alongside this comment) has its title stored as the old, un-stripped
+    // name. Without this fallback, a rescan after a title-cleaning fix would
+    // compute a different folderTitle, fail to match the existing row, and
+    // insert a brand-new duplicate series whose episodes then silently fail
+    // to insert (episodes.file_path is UNIQUE and already claimed by the
+    // orphaned original row) — same "episodes in the DB but nowhere in the
+    // UI" failure this comment already warns about, just from a new cause.
     let existing = await db.query(
       `SELECT id, tmdb_id FROM media_items
        WHERE library_id=$1 AND type='series'
-         AND (title=$2 OR sort_title=$2 OR nfo_path=$3)
+         AND (title=$2 OR sort_title=$2 OR nfo_path=$3 OR title=$4)
        LIMIT 1`,
-      [library.id, folderTitle, nfoPath]
+      [library.id, folderTitle, nfoPath, seriesEntry.name]
     )
     let seriesId = existing.rows[0]?.id
     let nfo = {}
