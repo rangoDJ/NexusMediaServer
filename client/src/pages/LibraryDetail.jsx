@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client.js'
 import { useServerEvents } from '../hooks/useServerEvents.js'
@@ -29,6 +29,8 @@ export default function LibraryDetail() {
   const [loading, setLoading]   = useState(true)
   const [scanning, setScanning] = useState(false)
   const [newCount, setNewCount] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const sentinelRef = useRef(null)
 
   // One-time: library info + genre list for this library
   useEffect(() => {
@@ -90,15 +92,32 @@ export default function LibraryDetail() {
     return () => { cancelled = true }
   }, [id, sort, genre])
 
-  async function loadMore() {
-    const next = page + 1
-    const r = await api.get('/media', {
-      params: { library_id: id, sort, genre: genre || undefined, page: next, limit: PAGE_SIZE }
-    })
-    setItems(prev => [...prev, ...r.data])
-    setPage(next)
-    setHasMore(r.data.length === PAGE_SIZE)
-  }
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true)
+    try {
+      const next = page + 1
+      const r = await api.get('/media', {
+        params: { library_id: id, sort, genre: genre || undefined, page: next, limit: PAGE_SIZE }
+      })
+      setItems(prev => [...prev, ...r.data])
+      setPage(next)
+      setHasMore(r.data.length === PAGE_SIZE)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [id, sort, genre, page])
+
+  // Auto-load the next page once the sentinel below the grid scrolls into
+  // view, instead of requiring a manual "Load more" click.
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || !hasMore || loading) return
+    const io = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && hasMore && !loadingMore) loadMore()
+    }, { rootMargin: '600px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [hasMore, loading, loadingMore, loadMore])
 
   return (
     <main className={styles.main}>
@@ -161,8 +180,8 @@ export default function LibraryDetail() {
           </div>
 
           {hasMore && (
-            <div className={styles.loadMoreWrap}>
-              <button className="ghost" onClick={loadMore}>Load more</button>
+            <div ref={sentinelRef} className={styles.loadMoreWrap}>
+              {loadingMore && <span className={styles.loadingMore}>Loading more…</span>}
             </div>
           )}
         </>

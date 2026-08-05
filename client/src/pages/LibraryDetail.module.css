@@ -177,6 +177,13 @@
   display: flex;
   justify-content: center;
   padding: 32px 0 8px;
+  min-height: 1px; /* stays a valid IntersectionObserver target even while empty */
+}
+
+.loadingMore {
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: var(--font-mono);
 }
 
 /* ── Skeleton ────────────────────────────────────────────────────────── */
