@@ -186,7 +186,14 @@ export default function Player({ mediaItemId, episodeId, title, onEnded }) {
     async function start() {
       const prevSession = liveSessionRef.current
       liveSessionRef.current = null
-      if (prevSession) api.delete(`/stream/${prevSession}`).catch(() => {})
+      // Awaited, not fire-and-forget: the new session's capacity check
+      // (pickTranscoder) runs server-side almost immediately after this, and
+      // a capped transcoder (max_sessions) would otherwise still see the old
+      // session's slot as occupied and reject the new one with "No
+      // transcoder nodes available" — a race that only shows up on quality
+      // switches and out-of-buffer seeks, since a fresh load has no prior
+      // session to race against.
+      if (prevSession) await api.delete(`/stream/${prevSession}`).catch(() => {})
 
       const wasPlaying = activeSrcRef.current !== null
       if (wasPlaying) {
